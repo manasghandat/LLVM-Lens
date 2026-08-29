@@ -1,0 +1,24 @@
+# Binaries
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Local configuration (commit .env.example instead)
+.env
+.env.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
