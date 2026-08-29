@@ -1,20 +1,18 @@
-# Binaries
-/bin/
-*.exe
-*.dll
-*.so
-*.dylib
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
 
-# Test and coverage output
-*.test
-*.out
-coverage.*
+# Frontend
+node_modules/
+frontend/dist/
 
-# Go workspace file
-go.work
-go.work.sum
+# Reports
+report/
 
-# Local configuration (commit .env.example instead)
+# Local configuration
 .env
 .env.local
 
