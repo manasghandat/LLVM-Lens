@@ -1,0 +1,148 @@
+"""Report emission: manifest.json + per-pass JSON chunks + frontend copy.
+
+Layout:
+
+    report/
+      index.html, app.js, style.css     (copied from frontend/)
+      data/
+        manifest.json                   metadata + ordered pass list
+        manifest.js                     same data as a script (file://-safe)
+        pass-<id>.json                  per-pass detail chunk
+        pass-<id>.js                    same data as a script (file://-safe)
+
+The .js wrappers exist because browsers refuse ``fetch()`` on ``file://``
+URLs; the frontend tries fetch first and falls back to script injection.
+``manifest.js`` also initializes the ``window.__LLVM_LENS_DATA__`` store the
+chunk scripts fill.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .diff import FnChange
+
+FRONTEND_FILES = ("index.html", "app.js", "style.css")
+
+
+@dataclass
+class ReportPass:
+    id: int
+    lane: str  # "ir" | "mir"
+    name: str  # display name
+    pass_id: str | None  # canonical pass id (the "(...)" in headers), if any
+    run_index: int  # 1-based position in its lane
+    time_ms: float | None
+    changed: bool
+    functions: dict[str, FnChange] = field(default_factory=dict)
+    dots: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    analyses: dict[str, list[str]] = field(default_factory=dict)  # run/cached/invalidated
+    log: str = ""
+    spills: dict[str, int] = field(default_factory=dict)  # mir only: fn -> count
+    reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
+    asm: str | None = None  # final assembly text, attached to the last mir pass
+
+
+def _pass_json(pass_: ReportPass) -> dict[str, Any]:
+    functions: dict[str, Any] = {}
+    for fn, change in pass_.functions.items():
+        functions[fn] = {
+            "before": change.before,
+            "after": change.after,
+            "changed": change.changed,
+        }
+        dot_before, dot_after = pass_.dots.get(fn, (None, None))
+        if dot_before:
+            functions[fn]["dotBefore"] = dot_before
+        if dot_after:
+            functions[fn]["dotAfter"] = dot_after
+
+    entry: dict[str, Any] = {
+        "id": pass_.id,
+        "lane": pass_.lane,
+        "name": pass_.name,
+        "passId": pass_.pass_id,
+        "runIndex": pass_.run_index,
+        "timeMs": pass_.time_ms,
+        "changed": pass_.changed,
+        "functions": functions,
+        "analyses": pass_.analyses,
+        "log": pass_.log,
+    }
+    if pass_.lane == "mir":
+        entry["spills"] = pass_.spills
+        entry["regMap"] = pass_.reg_map
+        entry["asm"] = pass_.asm
+    return entry
+
+
+def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[str, Any]:
+    pass_list = [
+        {
+            "id": p.id,
+            "lane": p.lane,
+            "name": p.name,
+            "passId": p.pass_id,
+            "runIndex": p.run_index,
+            "timeMs": p.time_ms,
+            "changed": p.changed,
+            "spillCount": sum(p.spills.values()) if p.spills else None,
+            "analysisCounts": {
+                "run": len(p.analyses.get("run", [])),
+                "cached": len(p.analyses.get("cached", [])),
+                "invalidated": len(p.analyses.get("invalidated", [])),
+            },
+            "functions": sorted(p.functions),
+        }
+        for p in passes
+    ]
+    return {
+        "schemaVersion": 1,
+        "metadata": metadata,
+        "passes": pass_list,
+    }
+
+
+def _write_json_plus_script(path: Path, data: dict[str, Any], assign: str) -> None:
+    text = json.dumps(data, indent=1)
+    path.with_suffix(".json").write_text(text + "\n")
+    path.with_suffix(".js").write_text(f"{assign} = {text};\n")
+
+
+def emit_report(
+    report_dir: str | Path,
+    *,
+    passes: list[ReportPass],
+    metadata: dict[str, Any],
+    frontend_dir: str | Path,
+) -> Path:
+    """Write the report into *report_dir*; returns the manifest path."""
+    report_dir = Path(report_dir)
+    data_dir = report_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = _manifest_json(passes, metadata)
+    _write_json_plus_script(
+        data_dir / "manifest",
+        manifest,
+        "window.__LLVM_LENS_MANIFEST__;\n"
+        "window.__LLVM_LENS_DATA__ = {}\n"
+        "window.__LLVM_LENS_MANIFEST__",
+    )
+    for pass_ in passes:
+        _write_json_plus_script(
+            data_dir / f"pass-{pass_.id}",
+            _pass_json(pass_),
+            f'window.__LLVM_LENS_DATA__["pass-{pass_.id}"]',
+        )
+
+    frontend_dir = Path(frontend_dir)
+    for name in FRONTEND_FILES:
+        source = frontend_dir / name
+        if source.is_file():
+            shutil.copy2(source, report_dir / name)
+    return data_dir / "manifest.json"

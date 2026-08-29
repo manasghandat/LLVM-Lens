@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llvm-pass-analyzer"
+version = "0.1.0"
+description = "Analyze LLVM opt/llc pass pipelines and emit a static HTML report"
+requires-python = ">=3.10"
+dependencies = ["click>=8.0"]
+
+[project.scripts]
+llvm-pass-analyzer = "cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["cli", "cli.*"]
