@@ -39,6 +39,50 @@ def test_parse_changed_ir_adjacent_snapshots_do_not_leak():
     assert "*** IR Dump After" not in snapshots[0].ir
 
 
+def test_parse_changed_ir_function_dump_stops_at_closing_brace():
+    # opt interleaves -debug-pass-manager output right after the function's
+    # closing brace; it must not leak into the snapshot (CFG/diff content).
+    stderr = (
+        "*** IR Dump After LICMPass on flush_cache ***\n"
+        "define ptr @flush_cache() {\n"
+        "%1:\n"
+        "  %.04.lcssa = phi ptr [ %.04, %1 ]\n"
+        "  ret ptr %.04.lcssa\n"
+        "}\n"
+        "Running analysis: MemorySSAAnalysis on flush_cache\n"
+        "Running pass: LoopInstSimplifyPass on loop %<unnamed loop> in function flush_cache\n"
+        "*** IR Dump After SimplifyCFGPass on flush_cache ***\n"
+        "define ptr @flush_cache() {\n"
+        "  ret ptr null\n"
+        "}\n"
+    )
+    snapshots = parse_changed_ir(stderr)
+    assert [s.pass_name for s in snapshots] == ["LICMPass", "SimplifyCFGPass"]
+    assert "Running" not in snapshots[0].ir
+    assert snapshots[0].ir.rstrip().endswith("}")
+
+
+def test_parse_changed_ir_module_dump_keeps_body_but_drops_noise():
+    # Module and loop dumps have no closing brace; the body runs to the next
+    # header but pass-manager log lines are still filtered out.
+    stderr = (
+        "*** IR Dump After GlobalOptPass on [module] ***\n"
+        "define i32 @a() {\n"
+        "  ret i32 1\n"
+        "}\n"
+        "define i32 @b() {\n"
+        "  ret i32 2\n"
+        "}\n"
+        "Running pass: InstCombinePass on a\n"
+        "Invalidating analysis: DominatorTreeAnalysis on a\n"
+    )
+    snapshots = parse_changed_ir(stderr)
+    assert len(snapshots) == 1
+    assert "Running" not in snapshots[0].ir
+    assert "Invalidating" not in snapshots[0].ir
+    assert "@b" in snapshots[0].ir
+
+
 # --- debug_pass_manager ------------------------------------------------------
 
 

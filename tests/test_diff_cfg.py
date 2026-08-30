@@ -99,6 +99,23 @@ def test_ir_cfg_switch_continuation_labels():
     assert "n0 -> n3" in dot  # entry -> default
 
 
+def test_ir_cfg_stops_at_function_end():
+    # opt interleaves -debug-pass-manager output after the closing brace;
+    # nothing past "}" may become block content.
+    ir = (
+        "define ptr @flush_cache() {\n"
+        "%1:\n"
+        "  %.04.lcssa = phi ptr [ %.04, %1 ]\n"
+        "  ret ptr %.04.lcssa\n"
+        "}\n"
+        "Running analysis: MemorySSAAnalysis on flush_cache\n"
+        "Running pass: LICMPass on loop %<unnamed loop> in function flush_cache\n"
+    )
+    dot = ir_cfg_dot(ir, "flush_cache")
+    assert "Running" not in dot
+    assert "ret ptr %.04.lcssa" in dot
+
+
 # --- cfg: machine ----------------------------------------------------------------
 
 

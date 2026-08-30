@@ -89,7 +89,7 @@ def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
         if current is None or not line.strip():
             continue
         if line.strip() == "}":
-            continue  # function terminator
+            break  # function terminator: nothing after it belongs to a block
         pending.extend(BR_LABEL_RE.findall(line))
         cleaned = _clean_ir_line(line)
         if cleaned is not None:
