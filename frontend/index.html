@@ -8,7 +8,7 @@
 </head>
 <body>
 <header id="topbar">
-  <div class="brand">LLVM-Lens</div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true"></span>LLVM-Lens</div>
   <div class="meta" id="meta"></div>
   <div class="controls">
     <label class="check"><input type="checkbox" id="changedOnly"> changed only</label>
@@ -16,6 +16,11 @@
   </div>
 </header>
 <main id="app"></main>
+<!-- CFG graph stack: load order matters (dagre before cytoscape-dagre;
+     cytoscape before the extension that registers on it). -->
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/dagre.min.js"></script>
+<script src="vendor/cytoscape-dagre.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

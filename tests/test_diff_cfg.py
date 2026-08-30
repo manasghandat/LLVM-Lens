@@ -80,9 +80,13 @@ default:
 def test_ir_cfg_branch():
     dot = ir_cfg_dot(IR_WITH_BRANCH, "f")
     assert dot.startswith("digraph")
-    # Labels carry the block name plus its instructions (escaped as \n).
-    assert 'n0 [label="entry\\n  %cmp = icmp sgt i32 %x, 0\\n  br i1 %cmp, label %then, label %else"]' in dot
-    assert 'n1 [label="then\\n  ret i32 1"]' in dot
+    # Labels carry the block name plus its instructions (escaped as \n);
+    # the code attribute carries the full untruncated block body.
+    assert (
+        'n0 [label="entry\\n  %cmp = icmp sgt i32 %x, 0\\n  br i1 %cmp, label %then, label %else", '
+        'code="%cmp = icmp sgt i32 %x, 0\\nbr i1 %cmp, label %then, label %else"]'
+    ) in dot
+    assert 'n1 [label="then\\n  ret i32 1", code="ret i32 1"]' in dot
     assert "n0 -> n1" in dot
     assert "n0 -> n2" in dot  # else
     assert "n1 -> n3" not in dot  # ret has no successors
@@ -172,8 +176,8 @@ def test_machine_cfg_align16_block_headers():
 def test_machine_cfg_dot():
     dot = machine_cfg_dot(_machine_function())
     # bb.0 shows its instruction; the empty block is just its name.
-    assert 'n0 [label="bb.0\\n  %0:gr32 = MOV32rm ..."]' in dot
-    assert 'n1 [label="bb.1"]' in dot
+    assert 'n0 [label="bb.0\\n  %0:gr32 = MOV32rm ...", code="%0:gr32 = MOV32rm ..."]' in dot
+    assert 'n1 [label="bb.1"]' in dot  # no code attribute for empty blocks
     assert "n0 -> n1" in dot
     assert "n0 -> n2" in dot
     assert "n1 -> n2" in dot
@@ -196,14 +200,16 @@ entry:
 }
 """
     dot = ir_cfg_dot(ir)
-    # !dbg tails dropped, instructions capped at MAX_CODE_LINES.
+    # !dbg tails dropped, label instructions capped at MAX_CODE_LINES...
     assert "!dbg" not in dot
     assert dot.count("\\n  %") == MAX_CODE_LINES
+    # ...but the code attribute carries every instruction untruncated.
+    assert 'code="%0 = add i32 0, 1\\n%1 = add i32 0, 2\\n%2 = add i32 0, 3\\n%3 = add i32 0, 4\\n%4 = add i32 0, 5\\n%5 = add i32 0, 6\\n%6 = add i32 0, 7\\nret void"' in dot
 
     long_line = "  " + "x" * 200 + " = %42, !dbg !1"
     dot = ir_cfg_dot("define void @f() {\nentry:\n" + long_line + "\n  ret void\n}\n")
-    assert f"…" in dot
-    assert dot.count("x") <= MAX_CODE_CHARS
+    assert "…" in dot  # the label truncates...
+    assert 'code="' + "x" * 200 + ' = %42\\nret void"' in dot  # ...the code attribute does not
 
     # Machine lines: debug-location and source comments cut, memoperands kept.
     mf = MachineFunction(
@@ -222,3 +228,5 @@ entry:
     assert "%stack.4" in dot  # spill annotation preserved
     assert "comment-only" not in dot
     assert "DBG_VALUE" not in dot  # debug pseudo-instructions stay out
+    # Full cleaned instruction line in the code attribute.
+    assert ', code="%0 = MOV32rm $edi, :: (load (s32) from %stack.4)"]' in dot

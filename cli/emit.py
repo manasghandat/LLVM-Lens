@@ -26,7 +26,17 @@ from typing import Any
 
 from .diff import FnChange
 
-FRONTEND_FILES = ("index.html", "app.js", "style.css")
+# Files copied into the report directory (paths relative to frontend/).
+# vendor/ holds the UMD builds of the CFG graph stack (cytoscape + dagre),
+# so reports stay fully self-contained and file://-safe.
+FRONTEND_FILES = (
+    "index.html",
+    "app.js",
+    "style.css",
+    "vendor/cytoscape.min.js",
+    "vendor/dagre.min.js",
+    "vendor/cytoscape-dagre.js",
+)
 
 
 @dataclass
@@ -144,5 +154,7 @@ def emit_report(
     for name in FRONTEND_FILES:
         source = frontend_dir / name
         if source.is_file():
-            shutil.copy2(source, report_dir / name)
+            destination = report_dir / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
     return data_dir / "manifest.json"

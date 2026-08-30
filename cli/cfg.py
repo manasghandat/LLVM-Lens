@@ -2,7 +2,10 @@
 
 IR CFGs are parsed from function text (block labels + terminator successors);
 machine CFGs come from the ``successors:`` lists of MIR blocks. DOT strings
-are stored in the report JSON and rendered client-side.
+are stored in the report JSON and rendered client-side with cytoscape +
+dagre. Each node carries a truncated ``label`` (block name plus a few
+instructions) for the graph display and a full ``code`` attribute so the
+viewer can show the complete block body on demand.
 """
 
 from __future__ import annotations
@@ -19,35 +22,46 @@ LABEL_RE = re.compile(r"^([.\w\"$%-]+):\s*(;.*)?$")
 BR_LABEL_RE = re.compile(r"label %([.\w\"$-]+)")
 
 # Graph readability caps: node labels show the block name plus up to
-# MAX_CODE_LINES instructions, each truncated to MAX_CODE_CHARS.
+# MAX_CODE_LINES instructions, each truncated to MAX_CODE_CHARS. The full
+# untruncated lines go into the node's ``code`` attribute.
 MAX_CODE_LINES = 6
 MAX_CODE_CHARS = 52
-# Drop debug metadata before truncation so the visible code is mostly
-# operands: IR lines carry ", !dbg !36" tails; MIR lines carry
-# "debug-location !19" tokens and "; file.c:line:col" source comments.
+# Drop debug metadata so the visible code is mostly operands: IR lines carry
+# ", !dbg !36" tails; MIR lines carry "debug-location !19" tokens and
+# "; file.c:line:col" source comments.
 IR_DBG_TAIL_RE = re.compile(r",?\s+!dbg\s+![^\s,]+.*$")
 MIR_TAIL_RE = re.compile(r"debug-location\s+!\d+\s*")
 
 
-def _trim_line(line: str, dbg_tail_re: re.Pattern[str] | None = None) -> str:
-    text = line if dbg_tail_re is None else dbg_tail_re.sub("", line)
-    text = text.strip()
+def _truncate(text: str) -> str:
+    """Shorten one instruction for the node label; full text goes in code."""
     if len(text) > MAX_CODE_CHARS:
-        text = text[: MAX_CODE_CHARS - 1] + "…"
+        return text[: MAX_CODE_CHARS - 1] + "…"
     return text
 
 
-def _machine_instruction_line(line: str) -> str:
-    """Clean one MIR instruction for display in a CFG node."""
-    text = line.split(";", 1)[0]  # drop "; file.c:3:1" source comments
-    return _trim_line(MIR_TAIL_RE.sub("", text))
+def _clean_ir_line(line: str) -> str | None:
+    """One IR line prepared for the CFG; None for comments/debug intrinsics."""
+    text = line.strip()
+    if text.startswith(";") or text.startswith("#dbg_"):
+        return None
+    return IR_DBG_TAIL_RE.sub("", line).strip()
+
+
+def _clean_mir_line(line: str) -> str | None:
+    """One MIR line prepared for the CFG; None for comments/DBG_VALUE."""
+    text = line.strip()
+    if not text or text.startswith(";") or text.startswith("DBG_VALUE"):
+        return None
+    return MIR_TAIL_RE.sub("", line.split(";", 1)[0]).strip()
 
 
 def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
     """Build a DOT graph for one function's CFG from its IR text.
 
     Node labels carry the block name plus up to MAX_CODE_LINES instructions
-    so the graph shows the actual code in each block.
+    so the graph shows the actual code in each block; the ``code`` attribute
+    carries every instruction line untruncated for the full-body view.
     """
     nodes: list[tuple[str, list[str]]] = []
     edges: list[tuple[str, str]] = []
@@ -74,12 +88,12 @@ def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
             continue
         if current is None or not line.strip():
             continue
+        if line.strip() == "}":
+            continue  # function terminator
         pending.extend(BR_LABEL_RE.findall(line))
-        text = line.strip()
-        if text.startswith(";") or text.startswith("#dbg_"):
-            continue  # comments and debug intrinsics stay out of the graph
-        if len(code) < MAX_CODE_LINES:
-            code.append(_trim_line(line, IR_DBG_TAIL_RE))
+        cleaned = _clean_ir_line(line)
+        if cleaned is not None:
+            code.append(cleaned)
     flush()
     if current is not None:
         nodes.append((current, code))
@@ -108,11 +122,10 @@ def machine_cfg_dot(machine_function: MachineFunction) -> str:
     edges: list[tuple[str, str]] = []
     for block in machine_function.blocks:
         code = [
-            _machine_instruction_line(line)
+            cleaned
             for line in block.lines
-            if line.strip()
-            and not line.strip().startswith((";", "DBG_VALUE"))
-        ][:MAX_CODE_LINES]
+            if (cleaned := _clean_mir_line(line)) is not None
+        ]
         nodes.append((block.name, code))
     names = [name for name, _ in nodes]
     for block in machine_function.blocks:
@@ -124,15 +137,19 @@ def machine_cfg_dot(machine_function: MachineFunction) -> str:
 
 
 def _render_dot(nodes: list[tuple[str, list[str]]], edges: list[tuple[str, str]]) -> str:
-    def escape(label: str) -> str:
+    def escape(text: str) -> str:
         # Backslash and quote first, then newlines -> DOT's \n escape (which
         # the frontend parser turns back into real newlines).
-        return '"' + label.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
     parts = ["digraph {", '  rankdir="TB";']
-    for i, (name, code) in enumerate(nodes):
-        body = name if not code else name + "\n" + "\n".join("  " + line for line in code)
-        parts.append(f"  n{i} [label={escape(body)}];")
+    for i, (name, lines) in enumerate(nodes):
+        display = [_truncate(line) for line in lines[:MAX_CODE_LINES]]
+        label = name if not display else name + "\n" + "\n".join("  " + line for line in display)
+        node = f'  n{i} [label={escape(label)}'
+        if lines:
+            node += f', code={escape("\n".join(lines))}'
+        parts.append(node + "];")
     index = {name: i for i, (name, _) in enumerate(nodes)}
     for src, dst in edges:
         if src in index and dst in index:

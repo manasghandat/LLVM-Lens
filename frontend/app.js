@@ -93,12 +93,13 @@ function cardHtml(p) {
   if (p.lane === "mir" && p.spillCount) badges.push(`<span class="badge spill">⚠ ${p.spillCount} spills</span>`);
   const a = p.analysisCounts || {};
   badges.push(`<span class="badge analyses">+${a.run || 0} −${a.invalidated || 0}</span>`);
+  const idx = String(p.runIndex).padStart(3, "0");
   return `
-    <div class="card ${p.changed ? "" : "unchanged"}" data-id="${p.id}">
+    <div class="card ${p.changed ? "changed" : "unchanged"}" data-id="${p.id}">
       <div class="row">
-        <span class="idx">#${p.runIndex}</span>
+        <span class="idx">#${idx}</span>
         <span class="name">${escapeHtml(p.name)}</span>
-        ${badges.join(" ")}
+        <span class="badges">${badges.join("")}</span>
         <span class="time">${p.timeMs != null ? p.timeMs.toFixed(2) + " ms" : ""}</span>
       </div>
     </div>`;
@@ -111,19 +112,25 @@ function renderPipeline(manifest) {
   );
   const lane = l => passes.filter(p => p.lane === l)
     .map(cardHtml).join("");
+  const laneTitle = (title, sub, count) => `
+    <div class="lane-title"><h2>${title}</h2><span class="lane-sub">${sub}</span>
+      <span class="lane-rule"></span><span class="count">${count}</span></div>`;
   document.getElementById("app").innerHTML = `
     <div class="lanes">
-      <div>
-        <div class="lane-title"><h2>opt · IR passes</h2>
-          <span class="count">${passes.filter(p => p.lane === "ir").length}</span></div>
-        ${lane("ir") || '<div class="card unchanged"><div class="row">(no IR passes captured)</div></div>'}
-      </div>
-      <div>
-        <div class="lane-title"><h2>llc · machine passes</h2>
-          <span class="count">${passes.filter(p => p.lane === "mir").length}</span></div>
-        ${lane("mir") || '<div class="card unchanged"><div class="row">(no machine passes captured)</div></div>'}
-      </div>
-      <div class="arrow">final IR ──&gt; ISel</div>
+      <section class="lane">
+        ${laneTitle("opt", "IR passes", passes.filter(p => p.lane === "ir").length)}
+        <div class="lane-body">
+          ${lane("ir") || '<div class="card unchanged"><div class="row">(no IR passes captured)</div></div>'}
+        </div>
+      </section>
+      <section class="lane">
+        ${laneTitle("llc", "machine passes", passes.filter(p => p.lane === "mir").length)}
+        <div class="lane-body">
+          ${lane("mir") || '<div class="card unchanged"><div class="row">(no machine passes captured)</div></div>'}
+        </div>
+      </section>
+      <div class="arrow"><span class="arrow-rule"></span>
+        <span>final IR → ISel</span><span class="arrow-rule"></span></div>
     </div>`;
   document.querySelectorAll(".card").forEach(card =>
     card.addEventListener("click", () => { location.hash = `#/pass/${card.dataset.id}`; }));
@@ -157,11 +164,12 @@ function switchTab(data, tab) {
   document.querySelectorAll(".tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === tab));
   const body = document.getElementById("tabbody");
+  destroyCfgGraphs();
   if (tab === "Diff") body.innerHTML = diffTabHtml(data);
   else if (tab === "Analyses") body.innerHTML = analysesTabHtml(data);
   else if (tab === "Log") body.innerHTML = `<pre class="raw">${escapeHtml(data.log || "(no attributed output)")}</pre>`;
   else if (tab === "RegMap") body.innerHTML = regMapTabHtml(data);
-  else if (tab === "CFG") body.innerHTML = cfgTabHtml(data);
+  else if (tab === "CFG") { body.innerHTML = cfgTabHtml(data); mountCfgGraphs(); }
   else if (tab === "Asm") body.innerHTML = `<pre class="raw">${escapeHtml(data.asm)}</pre>`;
 }
 
@@ -174,16 +182,18 @@ function diffTabHtml(data) {
   return fns.map(([fn, change]) => {
     if (!change.changed) return "";
     const d = diffLines(change.before, change.after);
+    const del = d.before.filter(e => !e.keep).length;
+    const add = d.after.filter(e => !e.keep).length;
     return `
       <details class="fn" open>
-        <summary>${escapeHtml(fn)}</summary>
+        <summary>${escapeHtml(fn)}<span class="fn-stat">−${del} +${add}</span></summary>
         <div class="diff-pair">
           <div class="diff-pane">
-            <div class="head">before</div>
+            <div class="head"><span>before</span><span class="count del">−${del}</span></div>
             <pre>${paneHtml(d.before, "del")}</pre>
           </div>
           <div class="diff-pane">
-            <div class="head">after</div>
+            <div class="head"><span>after</span><span class="count add">+${add}</span></div>
             <pre>${paneHtml(d.after, "add")}</pre>
           </div>
         </div>
@@ -213,6 +223,7 @@ function regMapTabHtml(data) {
 }
 
 function cfgTabHtml(data) {
+  CFG_PENDING = [];
   const fns = Object.entries(data.functions)
     .filter(([fn]) => fnMatchesFilter(fn));
   const finals = ((CURRENT_MANIFEST || {}).metadata || {}).finalCfg || {};
@@ -238,25 +249,68 @@ function cfgTabHtml(data) {
 }
 
 function cfgBlockHtml(fn, side, dot, open) {
-  const svg = cfgSvgHtml(dot);
-  const body = svg
-    ? `<div class="cfg-scroll">${svg}</div>
-       <details><summary>raw DOT</summary><pre class="raw">${escapeHtml(dot)}</pre></details>`
-    : `<p>(empty graph)</p>`;
-  return `<details class="fn" ${open || side === "after" ? "open" : ""}><summary>${escapeHtml(fn)} · ${side}</summary>${body}</details>`;
+  const idx = CFG_PENDING.length;
+  CFG_PENDING.push(dot);
+  const body = `
+    <div class="cfg-cy" data-idx="${idx}">
+      <div class="cfg-cy-frame">
+        <i class="cb tl" aria-hidden="true"></i><i class="cb tr" aria-hidden="true"></i>
+        <i class="cb bl" aria-hidden="true"></i><i class="cb br" aria-hidden="true"></i>
+        <div class="cfg-cy-canvas"></div>
+        <div class="cfg-cy-zoom">ZOOM ×1.00</div>
+      </div>
+      <div class="cfg-cy-detail"></div>
+    </div>
+    <details class="dot"><summary>raw DOT</summary><pre class="raw">${escapeHtml(dot)}</pre></details>`;
+  return `<details class="fn" ${open || side === "after" ? "open" : ""}><summary>${escapeHtml(fn)} <span class="side">· ${side}</span></summary>${body}</details>`;
 }
 
-/* --- CFG graph rendering (layered layout -> SVG, no deps) ----------------- */
+/* --- CFG graph rendering (cytoscape + dagre, vendored in vendor/) --------- */
 
-const CFG = { cw: 7.4, lh: 13, px: 12, py: 7, gapX: 64, gapY: 26, wrap: 22 };
+// Per-tab state: DOT payloads indexed as cfgBlockHtml builds the HTML, and
+// live cytoscape instances that get destroyed on navigation.
+let CFG_PENDING = [];
+const CFG_INSTANCES = new Set();
+
+// Mirrors the style.css token system: --well canvas, --panel2 nodes,
+// --line-strong borders, --ink labels, --entry entry block, --del back
+// edges, --trace selection.
+const CFG_COLORS = {
+  node: "#1a2136", border: "#3b4a6b", entry: "#8fd6a4",
+  text: "#c9d6ec", edge: "#54648c", back: "#e2959b", accent: "#79c9dc",
+};
+
+// Label metrics. The node font is monospace, so character width is uniform
+// and we can size each node's box to its label exactly: lines wrap at
+// CFG_FONT.maxW (emulating the old renderer's wrap) and the box grows with
+// the number of visual lines.
+const CFG_FONT = { size: 10, charW: 6.0, lineH: 14, padX: 10, padY: 8, maxW: 300 };
+
+function labelBox(label, charW = CFG_FONT.charW) {
+  const { lineH, padX, padY, maxW } = CFG_FONT;
+  // Safety margin: cytoscape word-wraps (text-wrap: wrap) at maxW, so our
+  // hard-wrapped lines must stay measurably narrower than that.
+  const maxChars = Math.max(1, Math.floor((maxW - 4) / charW));
+  const lines = String(label).split("\n");
+  // Hard-wrap long lines so the rendered label matches the computed box.
+  const wrapped = [];
+  let visual = 0;
+  for (const line of lines) {
+    let n = Math.max(1, Math.ceil(line.length / maxChars));
+    for (let i = 0; i < n; i++) wrapped.push(line.slice(i * maxChars, (i + 1) * maxChars));
+    visual += n;
+  }
+  const contentW = Math.min(maxW, Math.max(1, ...lines.map(l => l.length)) * charW);
+  return { w: contentW + 2 * padX, h: visual * lineH + 2 * padY, wrapped: wrapped.join("\n") };
+}
 
 function parseDot(dot) {
   const nodes = [], edges = [];
   for (const line of String(dot || "").split("\n")) {
-    let m = line.match(/^\s*n(\d+) \[label="((?:[^"\\]|\\.)*)"\]\s*;?$/);
+    let m = line.match(/^\s*n(\d+) \[label="((?:[^"\\]|\\.)*)"(?:, code="((?:[^"\\]|\\.)*)")?\]\s*;?$/);
     if (m) {
-      const raw = m[2];
-      nodes.push({ id: +m[1], label: raw.replace(/\\n/g, "\n").replace(/\\(.)/g, "$1") });
+      const un = (s) => s.replace(/\\n/g, "\n").replace(/\\(.)/g, "$1");
+      nodes.push({ id: +m[1], label: un(m[2]), code: m[3] !== undefined ? un(m[3]) : "" });
       continue;
     }
     m = line.match(/^\s*n(\d+) -> n(\d+);$/);
@@ -265,111 +319,139 @@ function parseDot(dot) {
   return { nodes, edges };
 }
 
-function wrapLabel(text, width) {
-  const out = [];
-  for (const part of String(text).split("\n")) {
-    let line = "";
-    for (const word of part.split(" ")) {
-      if (!line) line = word;
-      else if (line.length + 1 + word.length <= width) line += " " + word;
-      else { out.push(line); line = word; }
-    }
-    if (line) out.push(line);
-  }
-  return out.length ? out : [""];
-}
-
-// Longest-path layering (entry = node 0 at layer 0); cycles terminate via
-// the visited set. Back edges (target not strictly below source) are flagged.
-function layoutCfg({ nodes, edges }) {
-  const n = nodes.length;
-  const layer = new Array(n).fill(0);
-  const done = new Array(n).fill(false);
-  const preds = Array.from({ length: n }, () => []);
-  for (const [u, v] of edges) preds[v].push(u);
-  const visit = (v) => {
-    if (done[v]) return;
-    done[v] = true;
-    for (const u of preds[v]) { visit(u); layer[v] = Math.max(layer[v], layer[u] + 1); }
-  };
-  for (let i = 0; i < n; i++) visit(i);
-
-  const back = new Set();
-  for (const [u, v] of edges) if (layer[v] <= layer[u]) back.add(u + ">" + v);
-
-  const byLayerMap = new Map();
-  for (let i = 0; i < n; i++) {
-    const L = layer[i];
-    if (!byLayerMap.has(L)) byLayerMap.set(L, []);
-    byLayerMap.get(L).push(i);
-  }
-  const byLayer = [...byLayerMap.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1]);
-
-  const box = nodes.map(nd => {
-    const lines = wrapLabel(nd.label, CFG.wrap);
-    return { w: Math.max(...lines.map(l => l.length)) * CFG.cw + 2 * CFG.px,
-             h: lines.length * CFG.lh + 2 * CFG.py, lines };
+function mountCfgGraphs() {
+  document.querySelectorAll("#tabbody .cfg-cy").forEach(el => {
+    mountCfg(el, CFG_PENDING[+el.dataset.idx]);
   });
-
-  const layerH = byLayer.map(l => Math.max(...l.map(i => box[i].h)));
-  const layerY = [];
-  let y = 0;
-  for (let L = 0; L < byLayer.length; L++) { layerY[L] = y; y += layerH[L] + CFG.gapY; }
-
-  const pos = new Array(n);
-  for (let L = 0; L < byLayer.length; L++) {
-    const ids = byLayer[L];
-    const totalW = ids.reduce((s, i) => s + box[i].w, 0) + CFG.gapX * (ids.length - 1);
-    let x = -totalW / 2;
-    for (const i of ids) { pos[i] = { x, y: layerY[L] + (layerH[L] - box[i].h) / 2 }; x += box[i].w + CFG.gapX; }
-  }
-  let minX = 0, maxX = 0;
-  for (let i = 0; i < n; i++) {
-    minX = Math.min(minX, pos[i].x);
-    maxX = Math.max(maxX, pos[i].x + box[i].w);
-  }
-  for (let i = 0; i < n; i++) pos[i].x -= minX;
-  return { pos, box, back, W: maxX - minX, H: layerY[byLayer.length - 1] + layerH[byLayer.length - 1] };
 }
 
-function cfgSvgHtml(dot) {
+function destroyCfgGraphs() {
+  for (const cy of CFG_INSTANCES) cy.destroy();
+  CFG_INSTANCES.clear();
+}
+
+function mountCfg(el, dot) {
   const g = parseDot(dot);
-  if (!g.nodes.length) return "";
-  const laid = layoutCfg(g);
-  const uid = "cfg" + Math.random().toString(36).slice(2, 8);
-  const parts = [
-    `<svg class="cfg" width="${laid.W}" height="${laid.H}" viewBox="0 0 ${laid.W} ${laid.H}" xmlns="http://www.w3.org/2000/svg">`,
-    `<defs><marker id="${uid}-a" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z"/></marker></defs>`,
-  ];
+  if (!g.nodes.length) {
+    el.innerHTML = '<p class="cfg-empty">(empty graph)</p>';
+    return;
+  }
+  if (typeof cytoscape !== "function") {
+    el.innerHTML = '<p class="cfg-empty">(graph library failed to load)</p>';
+    return;
+  }
+  // Measure the real monospace advance width (the label font is monospace,
+  // so one measurement covers every character) so box sizing matches the
+  // actual renderer.
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = `${CFG_FONT.size}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  const charW = Math.max(meas.measureText("M").width, 1);
+  const elements = g.nodes.map(nd => {
+    const box = labelBox(nd.label, charW);
+    return {
+      data: {
+        id: "n" + nd.id,
+        label: box.wrapped,
+        code: nd.code,
+        name: nd.label.split("\n")[0],
+        w: box.w,
+        h: box.h,
+      },
+    };
+  });
   for (const [u, v] of g.edges) {
-    const a = laid.pos[u], b = laid.pos[v], ab = laid.box[u], bb = laid.box[v];
-    const isBack = laid.back.has(u + ">" + v);
-    let d;
-    if (u === v) {
-      const r = 16;
-      d = `M ${a.x + ab.w} ${a.y + ab.h / 2} C ${a.x + ab.w + r} ${a.y + ab.h / 2 - r}, ${a.x + ab.w + r} ${a.y + ab.h / 2 + r}, ${a.x + ab.w} ${a.y + ab.h / 2 + r}`;
-    } else if (isBack) {
-      d = `M ${a.x + ab.w} ${a.y + ab.h / 2} C ${a.x + ab.w + 42} ${a.y + ab.h / 2}, ${b.x + bb.w + 42} ${b.y + bb.h / 2}, ${b.x + bb.w} ${b.y + bb.h / 2}`;
-    } else {
-      const y0 = a.y + ab.h, y1 = b.y, mid = Math.max(24, (y1 - y0) / 2);
-      d = `M ${a.x + ab.w / 2} ${y0} C ${a.x + ab.w / 2} ${y0 + mid}, ${b.x + bb.w / 2} ${y1 - mid}, ${b.x + bb.w / 2} ${y1}`;
-    }
-    parts.push(`<path class="${isBack ? "back" : ""}" d="${d}" marker-end="url(#${uid}-a)"/>`);
+    elements.push({
+      data: { id: `e${u}-${v}`, source: "n" + u, target: "n" + v },
+      classes: u === v ? "loop" : "",
+    });
   }
-  for (const nd of g.nodes) {
-    const p = laid.pos[nd.id], b = laid.box[nd.id];
-    parts.push(
-      `<g class="node${nd.id === 0 ? " entry" : ""}" transform="translate(${p.x},${p.y})">` +
-      `<rect width="${b.w}" height="${b.h}" rx="4"/>` +
-      `<text x="${b.w / 2}" y="${CFG.py + CFG.lh / 2}">` +
-      b.lines.map((ln, k) =>
-        `<tspan class="${k === 0 ? "bn" : "c"}" x="${b.w / 2}" dy="${k ? CFG.lh : 0}">${escapeHtml(ln)}</tspan>`
-      ).join("") +
-      `</text></g>`
-    );
+  const canvas = el.querySelector(".cfg-cy-canvas");
+  const detail = el.querySelector(".cfg-cy-detail");
+  const cy = cytoscape({
+    container: canvas,
+    elements,
+    minZoom: 0.1,
+    maxZoom: 4,
+    style: [
+      { selector: "node", style: {
+        "background-color": CFG_COLORS.node,
+        "border-color": CFG_COLORS.border,
+        "border-width": 1.5,
+        "shape": "round-rectangle",
+        "width": "data(w)",
+        "height": "data(h)",
+        "label": "data(label)",
+        "color": CFG_COLORS.text,
+        "font-family": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        "font-size": CFG_FONT.size,
+        // "wrap" is required: with "none" cytoscape collapses "\n" label
+        // lines onto a single row. Our lines are pre-wrapped to fit, so no
+        // extra word wraps occur.
+        "text-wrap": "wrap",
+        "text-max-width": `${CFG_FONT.maxW}px`,
+        "text-valign": "center",
+        "text-halign": "center",
+        "padding": "0px",
+        // Lift labels off the graticule dots behind the canvas.
+        "text-outline-color": "#0c101b",
+        "text-outline-width": 2,
+        "text-outline-opacity": 0.9,
+      }},
+      { selector: "node#n0", style: { "border-color": CFG_COLORS.entry, "border-width": 2 } },
+      { selector: "node:selected", style: { "border-color": CFG_COLORS.accent, "border-width": 2 } },
+      { selector: "edge", style: {
+        "width": 1.3,
+        "line-color": CFG_COLORS.edge,
+        "target-arrow-color": CFG_COLORS.edge,
+        "target-arrow-shape": "triangle",
+        "arrow-scale": 0.9,
+        "curve-style": "bezier",
+      }},
+      { selector: "edge.back", style: {
+        "line-color": CFG_COLORS.back,
+        "target-arrow-color": CFG_COLORS.back,
+      }},
+      // Self-loop edges need explicit loop geometry or cytoscape refuses to
+      // draw them ("invalid endpoints").
+      { selector: "edge.loop", style: {
+        "loop-direction": "-45deg",
+        "loop-sweep": "-90deg",
+        "control-point-step-size": 60,
+      }},
+    ],
+  });
+  // Lay out without the self-loop edges: dagre stamps them with unusable
+  // control points ("invalid endpoints" warnings), and they add nothing to
+  // the ranking. Loops render from their own style instead.
+  cy.layout({
+    name: "dagre", rankDir: "TB", nodeSep: 24, rankSep: 40, edgeSep: 12,
+    eles: cy.elements().not(".loop"),
+  }).run();
+  // dagre lays cycles with their back edges running upward; mark them red.
+  cy.edges().forEach(e => {
+    if (e.target().position("y") <= e.source().position("y") + 1) e.addClass("back");
+  });
+  cy.fit(undefined, 24);
+  // Tap a node to read its full block code (labels are truncated).
+  cy.on("tap", "node", evt => {
+    const nd = evt.target;
+    const head = `<div class="cfg-cy-detail-head">${escapeHtml(nd.data("name"))}</div>`;
+    detail.innerHTML = nd.data("code")
+      ? `${head}<pre>${escapeHtml(nd.data("code"))}</pre>`
+      : `${head}<p>(no instructions)</p>`;
+  });
+  cy.on("tap", evt => {
+    if (evt.target === cy) detail.innerHTML = "";
+  });
+  // The lens readout: report the current zoom like a focus ring setting.
+  const zoomEl = el.querySelector(".cfg-cy-zoom");
+  if (zoomEl) {
+    const showZoom = () => { zoomEl.textContent = "ZOOM ×" + cy.zoom().toFixed(2); };
+    cy.on("zoom", showZoom);
+    showZoom();
   }
-  parts.push("</svg>");
-  return parts.join("");
+  CFG_INSTANCES.add(cy);
+  el._cy = cy;  // diagnostic hook
 }
 
 /* --- boot ---------------------------------------------------------------- */
@@ -388,6 +470,7 @@ function renderMeta(manifest) {
 
 async function route() {
   const manifest = await manifestPromise;
+  destroyCfgGraphs();  // detach graph canvases from any previous view
   renderMeta(manifest);
   const match = location.hash.match(/^#\/pass\/(\d+)$/);
   if (match) await renderPassDetail(manifest, match[1]);
