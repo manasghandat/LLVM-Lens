@@ -84,11 +84,24 @@ const check = (name, cond) => { if (!cond) failures.push(name); };
 const d = diffLines("int x;\nint y;\nreturn 0;", "int x;\nint z;\nint w;\nreturn 0;");
 const b = paneHtml(d.before, "del");
 const a = paneHtml(d.after, "add");
-check("removed line red in before pane", b.includes('class="del"'));
-check("added lines green in after pane", a.includes('class="add"'));
-check("no green in before pane", !b.includes('class="add"'));
-check("no red in after pane", !a.includes('class="del"'));
-check("kept lines uncolored", b.split('class="').length - 1 === 1);
+check("removed line marked del in before pane", b.includes('class="del"'));
+check("added lines marked add in after pane", a.includes('class="add"'));
+check("no add marks in before pane", !b.includes('class="add"'));
+check("no del marks in after pane", !a.includes('class="del"'));
+check("exactly one removed line", (b.match(/class="del"/g) || []).length === 1);
+check("exactly two added lines", (a.match(/class="add"/g) || []).length === 2);
+check("kept text survives tokenizing", b.replace(/<[^>]+>/g, "") === "int x;\nint y;\nreturn 0;");
+check("numbers tokenized", b.includes('class="tok-num"') && a.includes('class="tok-num"'));
+
+// tokenizer: one realistic IR line produces each token class
+const hl = highlightIR("loop:\n  %r = add i32 %a, 1  ; comment");
+check("ir: block label", hl.includes('<span class="tok-label">loop:</span>'));
+check("ir: keyword", hl.includes('<span class="tok-kw">add</span>'));
+check("ir: type", hl.includes('<span class="tok-type">i32</span>'));
+check("ir: vars", hl.includes('<span class="tok-var">%r</span>') && hl.includes('<span class="tok-var">%a</span>'));
+check("ir: number", hl.includes('<span class="tok-num">1</span>'));
+check("ir: comment", hl.includes('<span class="tok-com">; comment</span>'));
+check("ir: escape safety", highlightIR('"a<b>" ; x').includes('&lt;'));
 
 if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
 console.log("frontend diff checks passed");

@@ -10,12 +10,64 @@
 <header id="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>LLVM-Lens</div>
   <div class="meta" id="meta"></div>
-  <div class="controls">
-    <label class="check"><input type="checkbox" id="changedOnly"> changed only</label>
-    <input type="search" id="fnFilter" placeholder="filter function…" title="Filter functions across all views">
-  </div>
 </header>
-<main id="app"></main>
+
+<div class="workspace">
+  <!-- left rail: passes + functions panels -->
+  <aside class="rail" id="rail">
+    <button class="rail-edge" id="railCollapse" title="collapse panels">«</button>
+    <div class="rail-strip" aria-hidden="true">
+      <button class="expand" id="railExpand" title="expand panels">»</button>
+      <span class="vlabel">passes</span>
+      <span class="vlabel">functions</span>
+    </div>
+    <div class="rail-panels">
+      <section class="panel" id="passPanel">
+        <div class="panel-head">
+          <span class="panel-title">passes</span>
+          <button class="ptab" data-lane="ir">IR</button>
+          <button class="ptab" data-lane="mir">machine</button>
+          <span class="spacer"></span>
+          <label class="check"><input type="checkbox" id="changedOnly"> only changed</label>
+        </div>
+        <div class="list" id="passList"></div>
+      </section>
+      <section class="panel" id="fnPanel">
+        <div class="panel-head">
+          <span class="panel-title">functions</span>
+          <span class="panel-count" id="fnCount"></span>
+          <input type="search" id="fnFilter" placeholder="filter…" title="Filter functions across all views">
+        </div>
+        <div class="list" id="fnList"></div>
+      </section>
+    </div>
+  </aside>
+
+  <!-- right: split view + bottom panel -->
+  <main class="main">
+    <div class="view-head">
+      <span class="splt" id="modeCtl">
+        <button class="chip" data-mode="cfg">CFG</button>
+        <button class="chip" data-mode="diff">Diff</button>
+        <button class="chip" data-mode="both">both</button>
+      </span>
+      <span class="splt" id="splitCtl">
+        <button class="chip" id="splitSide" title="side by side">◫</button>
+        <button class="chip" id="splitStack" title="stacked">⊟</button>
+      </span>
+      <div class="ctx" id="ctx"></div>
+    </div>
+    <div class="split" id="split"></div>
+    <section class="bpanel open" id="bottom">
+      <div class="bpanel-head">
+        <button class="chev" id="bottomChev" title="collapse panel">⌄</button>
+        <span id="bottomTabs" class="btabs"></span>
+      </div>
+      <div class="bpanel-body" id="bottomBody"></div>
+    </section>
+  </main>
+</div>
+
 <!-- CFG graph stack: load order matters (dagre before cytoscape-dagre;
      cytoscape before the extension that registers on it). -->
 <script src="vendor/cytoscape.min.js"></script>

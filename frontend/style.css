@@ -1,9 +1,10 @@
-/* LLVM-Lens report — "the instrument".
+/* LLVM-Lens report — "the instrument" (workstation layout).
  *
- * The report is an inspection instrument: a graphite-blue housing, engraved
- * monospace labels, signal colors reserved for meaning (cyan = the trace,
- * green/red = diff add/del, amber = warnings), and the CFG canvas framed as
- * the specimen under the lens (reticle brackets + live zoom readout).
+ * A docked-panel workstation like a graphics or IDE tool: collapsible left
+ * rail (passes + functions), a split main view (CFG / Diff panes, side by
+ * side or stacked, draggable divider), and a collapsible bottom panel with
+ * tabs. The CFG canvas keeps the lens treatment: reticle brackets, graticule,
+ * and a live zoom readout from cytoscape's zoom event.
  *
  * Reports must open offline from file://, so everything is system type:
  * one monospace stack, hierarchy from size/weight/case/tracking. */
@@ -35,34 +36,33 @@
   --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
     Menlo, Consolas, monospace;
 
-  /* micro-label treatment: engraved panel captions */
-  --caption: 10px;
+  --topbar-h: 41px;
 }
 
 * { box-sizing: border-box; }
 html { color-scheme: dark; }
+html, body { height: 100%; }
 
 body {
-  margin: 0;
-  /* faint ruled graticule on the ground; panels sit opaque on top */
+  margin: 0; overflow: hidden;
   background:
     linear-gradient(rgba(117, 131, 159, 0.045) 1px, transparent 1px) 0 0 / 24px 24px,
     linear-gradient(90deg, rgba(117, 131, 159, 0.045) 1px, transparent 1px) 0 0 / 24px 24px,
     var(--bg);
   color: var(--ink);
-  font: 13px/1.55 var(--mono);
+  font: 13px/1.5 var(--mono);
 }
 
 ::selection { background: rgba(121, 201, 220, 0.28); }
-
 :focus-visible { outline: 2px solid var(--trace); outline-offset: 2px; }
+
+button { font-family: var(--mono); }
 
 /* --- topbar: the instrument plate --------------------------------------- */
 
 #topbar {
-  position: sticky; top: 0; z-index: 10;
   display: flex; gap: 20px; align-items: center;
-  padding: 10px 24px;
+  height: var(--topbar-h); padding: 0 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -85,151 +85,178 @@ body {
 .meta { color: var(--dim); font-size: 11px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
-.controls { display: flex; gap: 14px; align-items: center; white-space: nowrap; }
-
 .check { display: flex; gap: 6px; align-items: center; color: var(--dim);
-  font-size: 11px; cursor: pointer; }
+  font-size: 11px; cursor: pointer; white-space: nowrap; }
+.spacer { flex: 1; }
 #changedOnly { accent-color: var(--trace); margin: 0; }
-
-#fnFilter {
-  background: var(--bg); color: var(--ink);
+#fnFilter { flex: 1; min-width: 0; background: var(--bg); color: var(--ink);
   border: 1px solid var(--line); border-radius: 2px;
-  padding: 4px 8px; font: 11px var(--mono); min-width: 160px;
-}
+  padding: 4px 8px; font: 11px var(--mono); }
 #fnFilter::placeholder { color: var(--faint); }
 #fnFilter:focus-visible { outline-offset: 0; border-color: var(--trace); }
 
-main { padding: 20px 24px; max-width: 1440px; margin: 0 auto; }
+/* --- workspace shell ------------------------------------------------------ */
 
-/* --- pipeline: two trace strips ------------------------------------------ */
+.workspace {
+  display: grid;
+  grid-template-columns: 22% 1fr;
+  gap: 10px;
+  padding: 10px;
+  height: calc(100vh - var(--topbar-h));
+  min-width: 0;
+}
+body.rail-collapsed .workspace { grid-template-columns: 30px 1fr; gap: 8px; }
 
-.lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+/* --- left rail ------------------------------------------------------------ */
 
-.lane-title { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
-.lane-title h2 { margin: 0; font-size: 12px; font-weight: 600;
-  letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink); }
-.lane-title .lane-sub { font-size: var(--caption); letter-spacing: 0.1em;
-  text-transform: uppercase; color: var(--faint); }
-.lane-title .lane-rule { flex: 1; border-top: 1px dashed var(--line);
-  transform: translateY(-3px); }
-.lane-title .count { font-size: 11px; color: var(--dim);
+.rail { position: relative; display: flex; flex-direction: column; gap: 10px;
+  min-width: 0; min-height: 0; }
+.rail-panels { display: flex; flex-direction: column; gap: 10px; flex: 1;
+  min-height: 0; overflow-y: auto; overflow-x: hidden; }
+
+/* collapse handle on the rail's inner edge — a real button, not a glyph */
+.rail-edge { position: absolute; right: -20px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 56px; z-index: 5; background: var(--panel2);
+  border: 1px solid var(--line-strong); border-radius: 2px;
+  color: var(--trace); font-size: 14px; line-height: 1; text-align: center;
+  cursor: pointer; padding: 0; }
+.rail-edge:hover { background: var(--panel); border-color: var(--trace); }
+
+/* collapsed strip */
+.rail-strip { display: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 2px; padding: 4px 0 8px; flex-direction: column;
+  align-items: center; gap: 16px; }
+body.rail-collapsed .rail-strip { display: flex; }
+body.rail-collapsed .rail-panels,
+body.rail-collapsed .rail-edge { display: none; }
+.rail-strip .expand { width: 24px; height: 40px; margin-top: 2px;
+  background: var(--panel2); border: 1px solid var(--line-strong);
+  border-radius: 2px; color: var(--trace); font-size: 13px; line-height: 1;
+  text-align: center; cursor: pointer; padding: 0; }
+.rail-strip .expand:hover { background: var(--panel); border-color: var(--trace); }
+.rail-strip .vlabel { writing-mode: vertical-rl; text-orientation: mixed;
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); }
+
+/* panels */
+.panel { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 2px; display: flex; flex-direction: column; min-height: 0; }
+#passPanel { flex: 1.4; }   /* the passes list gets the long share */
+#fnPanel { flex: 1; min-height: 80px; }
+
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  border-bottom: 1px solid var(--line); flex: none; }
+.panel-title { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); margin-right: 4px; }
+.panel-count { margin-left: auto; font-size: 10px; color: var(--faint);
   font-variant-numeric: tabular-nums; }
-.lane-title .count::before { content: "["; color: var(--faint); }
-.lane-title .count::after { content: "]"; color: var(--faint); }
+.panel-count::before { content: "["; }
+.panel-count::after { content: "]"; }
 
-/* the spine: each card is a pulse hanging off the trace rule */
-.lane-body { border-left: 1px solid var(--line-strong); padding-left: 16px; }
+.ptab { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--dim); padding: 2px 8px; border: 1px solid transparent;
+  border-radius: 2px; cursor: pointer; background: none; }
+.ptab:hover { color: var(--ink); }
+.ptab.active { color: var(--ink); border-color: var(--line); background: var(--panel2); }
+.ptab.off { opacity: 0.5; }
 
-.card { position: relative; background: var(--panel);
-  border: 1px solid var(--line); border-left-width: 2px; border-radius: 2px;
-  padding: 7px 12px; margin-bottom: 6px; cursor: pointer; }
-.card::before { content: ""; position: absolute; left: -17px; top: 50%;
-  width: 6px; border-top: 1px solid var(--line-strong); }
-.card:hover { border-color: var(--line-strong); border-left-color: var(--trace);
-  background: var(--panel2); }
-.card.changed { border-left-color: var(--trace); }
-.card.unchanged { border-left-color: var(--line); opacity: 0.55; }
+.list { overflow-y: auto; flex: 1; min-height: 0; }
 
-.card .row { display: flex; gap: 10px; align-items: center; }
-.card .idx { color: var(--faint); font-size: 11px; min-width: 4.5ch;
-  text-align: right; font-variant-numeric: tabular-nums; }
-.card .name { font-size: 13px; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; }
-.card .badges { display: flex; gap: 6px; margin-left: auto; flex: none; }
-.card .time { color: var(--faint); font-size: 11px; flex: none;
+/* list rows: pass list and function list */
+.row { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px;
+  cursor: pointer; border-left: 2px solid transparent; }
+.row:hover { background: var(--panel2); }
+.row.sel { background: var(--panel2); border-left-color: var(--trace); }
+.row .idx { color: var(--faint); font-size: 10px; min-width: 30px;
   font-variant-numeric: tabular-nums; }
-
-.badge { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 1px 6px; border-radius: 2px; border: 1px solid; white-space: nowrap; }
-.badge.changed { color: var(--trace); border-color: rgba(121, 201, 220, 0.35);
-  background: rgba(121, 201, 220, 0.08); }
-.badge.spill { color: var(--warn); border-color: rgba(220, 192, 132, 0.35);
-  background: var(--warn-bg); }
-.badge.analyses { color: var(--dim); border-color: var(--line); }
-
-/* the seam: final IR → ISel */
-.arrow { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px;
-  color: var(--faint); font-size: var(--caption); letter-spacing: 0.14em;
-  text-transform: uppercase; padding-top: 4px; }
-.arrow-rule { flex: 1; border-top: 1px dashed var(--line); }
-
-/* --- pass detail ---------------------------------------------------------- */
-
-.breadcrumb { display: inline-block; color: var(--trace); font-size: 11px;
-  letter-spacing: 0.1em; text-transform: uppercase; text-decoration: none;
-  margin-bottom: 12px; }
-.breadcrumb:hover { color: var(--ink); }
-
-h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
-h1 .idx { color: var(--dim); font-size: 11px; font-weight: 400; margin-left: 10px;
+.row .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 1; }
+.row .time { color: var(--faint); font-size: 10px;
   font-variant-numeric: tabular-nums; }
-
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line);
-  margin: 10px 0 16px; }
-.tabs button { background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--dim); font: 11px var(--mono); letter-spacing: 0.12em;
-  text-transform: uppercase; padding: 8px 14px; cursor: pointer; }
-.tabs button:hover { color: var(--ink); }
-.tabs button.active { color: var(--ink); border-bottom-color: var(--trace); }
-
-h2 { font-size: 12px; font-weight: 600; letter-spacing: 0.12em;
-  text-transform: uppercase; color: var(--dim); margin: 18px 0 8px; }
-
-/* --- diff view: one enclosure per function ------------------------------- */
-
-details.fn { margin-bottom: 10px; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 2px; }
-details.fn summary { cursor: pointer; padding: 8px 12px; color: var(--trace);
-  font-size: 12px; list-style: none; user-select: none; }
-details.fn summary::-webkit-details-marker { display: none; }
-details.fn summary::before { content: "▸"; margin-right: 8px; color: var(--faint);
-  font-size: 10px; }
-details.fn[open] summary::before { content: "▾"; }
-details.fn[open] summary { border-bottom: 1px solid var(--line); }
-
-.fn-stat { float: right; font-size: 11px; color: var(--faint);
+.row .stat { color: var(--faint); font-size: 10px; flex: none;
   font-variant-numeric: tabular-nums; }
-details.fn summary .side { color: var(--dim); }
+.row .stat .minus { color: var(--del); }
+.row .stat .plus { color: var(--add); }
+.row .warn { color: var(--warn); font-size: 10px; flex: none; }
 
-.diff-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-  margin: 12px; }
-.diff-pane { background: var(--panel2); border: 1px solid var(--line);
-  border-radius: 2px; overflow: hidden; }
-.diff-pane .head { display: flex; justify-content: space-between; align-items: center;
-  padding: 6px 10px; color: var(--dim); font-size: var(--caption);
-  letter-spacing: 0.12em; text-transform: uppercase;
-  border-bottom: 1px solid var(--line); }
-.diff-pane .head .count { font-size: 11px; color: var(--faint);
-  font-variant-numeric: tabular-nums; }
-.diff-pane .head .count.del { color: var(--del); }
-.diff-pane .head .count.add { color: var(--add); }
-.diff-pane pre { margin: 0; padding: 10px; overflow: auto; max-height: 60vh;
-  font-size: 12px; }
-.diff-pane pre .add { background: var(--add-bg); color: var(--add); display: block;
-  box-shadow: inset 2px 0 0 currentColor; }
-.diff-pane pre .del { background: var(--del-bg); color: var(--del); display: block;
-  box-shadow: inset 2px 0 0 currentColor; }
+/* signal dots: changed = trace, unchanged = none, spills = warn */
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--trace);
+  flex: none; }
+.dot.warn { background: var(--warn); }
+.row.dim { opacity: 0.55; }
+.row.empty { color: var(--dim); font-size: 12px; padding: 10px; cursor: default; }
 
-pre.raw { background: var(--panel); border: 1px solid var(--line);
-  border-radius: 2px; padding: 12px; overflow: auto; max-height: 70vh;
-  font-size: 12px; margin-bottom: 12px; }
+/* --- main view ------------------------------------------------------------- */
 
-/* nested raw-DOT disclosure inside a CFG enclosure */
-details.dot { margin: 0 12px 12px; }
-details.dot summary { cursor: pointer; color: var(--dim); font-size: 11px;
-  padding: 4px 0; list-style: none; }
-details.dot summary::-webkit-details-marker { display: none; }
-details.dot summary::before { content: "▸"; margin-right: 8px; color: var(--faint);
-  font-size: 10px; }
-details.dot[open] summary::before { content: "▾"; }
-details.dot pre { margin: 8px 0 0; }
+.main { display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  overflow-y: auto; }
 
-/* --- CFG: the specimen under the lens ------------------------------------ */
+.view-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 2px;
+  flex: none; }
+.chip { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 10px; border: 1px solid transparent; border-radius: 2px;
+  color: var(--dim); cursor: pointer; background: none; }
+.chip:hover { color: var(--ink); }
+.chip.on { color: var(--ink); border-color: var(--line); background: var(--panel2); }
+.chip.off { opacity: 0.5; }
+.splt { display: flex; border: 1px solid var(--line); border-radius: 2px;
+  overflow: hidden; }
+.splt .chip { border: 0; border-radius: 0; padding: 5px 8px; }
+.splt .chip.on { background: var(--panel2); }
+.splt.inactive { opacity: 0.4; }
+.ctx { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.ctx .fn { color: var(--ink); }
 
-.cfg-cy { margin: 12px; }
+/* split area */
+.split { display: flex; gap: 5px; flex: 1; min-height: 320px; align-items: stretch; }
+.split.stacked { flex-direction: column; }
+.divider { width: 5px; border-radius: 2px; background: var(--line-strong);
+  cursor: col-resize; flex: none; touch-action: none; }
+.split.stacked .divider { width: auto; height: 5px; cursor: row-resize; }
+.divider:hover { background: var(--trace); }
 
+.pane { flex: 1; min-width: 0; min-height: 0; background: var(--well);
+  border: 1px solid var(--line); border-radius: 2px; display: flex;
+  flex-direction: column; }
+.split.stacked .pane { min-height: 220px; }
+
+.pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
+.pane-title { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); }
+.pane-stat { margin-left: auto; color: var(--dim); font-size: 10px;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pane-stat .minus { color: var(--del); }
+.pane-stat .plus { color: var(--add); }
+
+.pane-body { flex: 1; position: relative; min-height: 0; display: flex;
+  flex-direction: column; }
+
+/* --- CFG pane: the specimen under the lens -------------------------------- */
+
+.cfg-cy { flex: 1; display: flex; flex-direction: column; min-height: 0;
+  min-width: 0; padding: 16px 8px 8px; }
+/* "both" source: before and after side by side */
+.cfg-pair { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.cfg-pair .cfg-cy { padding-bottom: 0; }
 .cfg-cy-frame { position: relative; background: var(--well);
-  border: 1px solid var(--line); border-radius: 2px; padding: 18px 10px 10px; }
+  border: 1px solid var(--line); border-radius: 2px; flex: 1; min-height: 0;
+  display: flex; }
+.cfg-cy-canvas { flex: 1; min-height: 0; background-image:
+  radial-gradient(circle, rgba(121, 201, 220, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px; }
+/* which graph is in the frame */
+.flabel { position: absolute; top: 5px; left: 12px; z-index: 1; font-size: 9px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+.cfg-cy-detail { flex: none; margin-top: 8px; }
+.cfg-cy-detail:empty { display: none; }
+.cfg-cy-detail-head { font-size: 11px; color: var(--trace); margin-bottom: 4px; }
+.cfg-cy-detail pre { margin: 0; padding: 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 2px; overflow: auto;
+  max-height: 180px; font-size: 12px; }
+.cfg-cy-detail p { margin: 0; color: var(--dim); }
 
 /* reticle corner brackets */
 .cb { position: absolute; width: 12px; height: 12px; border: 0 solid var(--trace);
@@ -239,44 +266,105 @@ details.dot pre { margin: 8px 0 0; }
 .cb.bl { bottom: 6px; left: 6px; border-bottom-width: 1.5px; border-left-width: 1.5px; }
 .cb.br { bottom: 6px; right: 6px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
 
-/* graticule dots behind the graph */
-.cfg-cy-canvas { height: 480px; background-image:
-  radial-gradient(circle, rgba(121, 201, 220, 0.07) 1px, transparent 1px);
-  background-size: 22px 22px; }
-
 /* focus readout, live from the cytoscape zoom event */
-.cfg-cy-zoom { position: absolute; bottom: 18px; right: 10px; font-size: 10px;
+.cfg-cy-zoom { position: absolute; bottom: 16px; right: 10px; font-size: 10px;
   letter-spacing: 0.08em; color: var(--faint); background: rgba(12, 16, 27, 0.85);
   padding: 2px 6px; border-radius: 2px; font-variant-numeric: tabular-nums; }
 
-.cfg-cy-detail { margin-top: 10px; }
-.cfg-cy-detail-head { font-size: 11px; color: var(--trace); margin-bottom: 4px; }
-.cfg-cy-detail pre { margin: 0; padding: 10px; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 2px; overflow: auto;
-  max-height: 220px; font-size: 12px; }
-.cfg-cy-detail p { margin: 0; color: var(--dim); }
-.cfg-empty { color: var(--dim); padding: 12px; }
+.cfg-empty { color: var(--dim); padding: 14px; font-size: 12px; }
 
-/* --- registers ------------------------------------------------------------ */
+/* --- Diff pane ------------------------------------------------------------- */
 
-table.grid { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
-table.grid th { background: var(--panel2); color: var(--dim); font-size: var(--caption);
+.dpair { display: flex; gap: 8px; flex: 1; min-height: 0; padding: 10px; }
+.diff-pane { flex: 1; min-width: 0; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 2px; overflow: hidden;
+  display: flex; flex-direction: column; }
+.diff-pane .head { display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 8px; color: var(--dim); font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--line); flex: none; }
+.diff-pane .head .count { font-size: 10px; color: var(--faint);
+  font-variant-numeric: tabular-nums; }
+.diff-pane .head .count.del { color: var(--del); }
+.diff-pane .head .count.add { color: var(--add); }
+.diff-pane pre { margin: 0; padding: 8px 10px; overflow: auto; flex: 1;
+  font-size: 12px; }
+.diff-pane pre .add { background: var(--add-bg); display: block;
+  box-shadow: inset 2px 0 0 var(--add); }
+.diff-pane pre .del { background: var(--del-bg); display: block;
+  box-shadow: inset 2px 0 0 var(--del); }
+
+/* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
+
+.tok-kw   { color: #7fa8e0; }                       /* opcodes, linkage, attrs */
+.tok-op   { color: #7fa8e0; font-weight: 700; }     /* MIR opcodes (line-leading) */
+.tok-type { color: #a6d08f; }                       /* i32, ptr, %struct.*, vectors */
+.tok-var  { color: var(--trace); }                  /* %x %42 @g $eflags */
+.tok-fn   { color: var(--ink); font-weight: 700; }  /* @fn( definition header */
+.tok-label { color: #8fd6a4; font-weight: 700; }    /* block: definitions */
+.tok-lit  { color: #dcc084; }                       /* true false null undef … */
+.tok-num  { color: #d0a878; }
+.tok-str  { color: #dcc084; }
+.tok-md   { color: #a98fd0; }                       /* !dbg !36 #0 decorators */
+.tok-com  { color: var(--faint); font-style: italic; }
+
+/* --- bottom collapsible panel ---------------------------------------------- */
+
+.bpanel { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 2px; flex: none; display: flex; flex-direction: column; }
+.bpanel-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  flex: none; }
+.bpanel.open .bpanel-head { border-bottom: 1px solid var(--line); }
+/* the collapse control is a real button in both states */
+.chev { background: var(--panel2); border: 1px solid var(--line-strong);
+  border-radius: 2px; color: var(--trace); font-size: 11px; cursor: pointer;
+  min-width: 24px; height: 22px; padding: 0 7px; line-height: 1;
+  letter-spacing: 0.08em; text-transform: uppercase; }
+.chev:hover { border-color: var(--trace); }
+.chev.collapsed { color: var(--dim); }  /* "collapsed" in light text */
+.btabs { display: flex; gap: 2px; }
+.vtab { background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--dim); font: 11px var(--mono); letter-spacing: 0.12em;
+  text-transform: uppercase; padding: 6px 10px; cursor: pointer; }
+.vtab:hover { color: var(--ink); }
+.vtab.active { color: var(--ink); border-bottom-color: var(--trace); }
+.bpanel-body { padding: 10px 12px; overflow: auto; max-height: 32vh; min-height: 80px; }
+.bpanel-body .ln { white-space: pre; color: var(--dim); font-size: 12px; }
+
+/* --- shared raw content ----------------------------------------------------- */
+
+pre.raw { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 2px; padding: 12px; overflow: auto; max-height: 24vh;
+  font-size: 12px; margin: 0; }
+
+h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--dim); margin: 4px 0 6px; }
+
+table.grid { border-collapse: collapse; width: 100%; }
+table.grid th { background: var(--panel2); color: var(--dim); font-size: 9px;
   letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500;
-  text-align: left; padding: 5px 10px; border: 1px solid var(--line); }
-table.grid td { border: 1px solid var(--line); padding: 4px 10px; font-size: 12px; }
+  text-align: left; padding: 4px 8px; border: 1px solid var(--line); }
+table.grid td { border: 1px solid var(--line); padding: 3px 8px; font-size: 12px; }
 
 .hidden { display: none; }
 
-/* --- motion & response ----------------------------------------------------- */
+/* --- motion & response ------------------------------------------------------ */
 
 @media (prefers-reduced-motion: no-preference) {
-  .card, .tabs button { transition: border-color 0.12s ease, background-color 0.12s ease; }
+  .chip, .ptab, .row, .vtab { transition: background-color 0.12s ease,
+    color 0.12s ease, border-color 0.12s ease; }
 }
 
-@media (max-width: 980px) {
-  .lanes { grid-template-columns: 1fr; gap: 24px; }
-  .diff-pair { grid-template-columns: 1fr; }
-  #topbar { flex-wrap: wrap; padding: 10px 16px; }
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .workspace { grid-template-columns: 1fr; height: auto; }
+  body.rail-collapsed .workspace { grid-template-columns: 1fr; }
+  .rail-strip { display: none !important; }
+  .rail-panels { display: flex !important; overflow: visible; }
+  .rail-edge { display: none !important; }
+  .split { flex-direction: column; min-height: 0; }
+  .split .divider { display: none; }
+  .split .pane { min-height: 300px; }
+  #topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; }
   .meta { order: 3; flex-basis: 100%; }
-  main { padding: 16px; }
 }
