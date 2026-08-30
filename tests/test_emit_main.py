@@ -142,6 +142,12 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     assert manifest["metadata"]["pipeline"] == "mem2reg"
     assert manifest["metadata"]["toolVersions"]["opt"].startswith("Ubuntu LLVM version 22")
     assert {p["lane"] for p in manifest["passes"]} == {"ir", "mir"}
+    # final CFG captured per lane, per function, with code-bearing labels
+    final_cfg = manifest["metadata"]["finalCfg"]
+    assert set(final_cfg) == {"ir", "mir"}
+    for fn, dot in final_cfg["mir"].items():
+        assert dot.startswith("digraph")
+        assert '\\n  ' in dot  # block names plus real instructions
     assert (tmp_path / "report" / "index.html").is_file()
     assert (tmp_path / "report" / "raw" / "opt-stderr.log").is_file()
     assert (tmp_path / "report" / "data" / "pass-1.json").is_file()

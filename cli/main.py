@@ -364,6 +364,18 @@ def build_report(
     for index, pass_ in enumerate(all_passes, start=1):
         pass_.id = index
 
+    # Final state of each function's CFG after the whole pipeline (last card
+    # per lane that produced a graph) — shown as the "final CFG" in the UI.
+    final_cfg: dict[str, dict[str, str]] = {}
+    for lane, lane_passes in (("ir", lane_a), ("mir", lane_b)):
+        final: dict[str, str] = {}
+        for pass_ in lane_passes:
+            for fn, (_, after) in pass_.dots.items():
+                if after:
+                    final[fn] = after
+        if final:
+            final_cfg[lane] = final
+
     metadata = {
         "source": str(compiled.source_path),
         "inputKind": compiled.kind,
@@ -374,6 +386,7 @@ def build_report(
         "totalTimeMs": round(total_ms, 1),
         "optCrashed": opt_result.failed,
         "llcCrashed": bool(llc_result and llc_result.failed),
+        "finalCfg": final_cfg,
         "errors": {},
     }
     if opt_result.failed:

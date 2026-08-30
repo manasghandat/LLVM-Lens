@@ -63,6 +63,22 @@ details.fn summary { cursor: pointer; font-family: var(--mono); color: var(--acc
 pre.raw { background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; padding: 10px; overflow: auto; max-height: 70vh;
   font-family: var(--mono); font-size: 12px; }
+
+/* CFG graph */
+.cfg-scroll { overflow: auto; background: #0f1116; border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+svg.cfg { display: block; font-family: var(--mono); }
+svg.cfg path { fill: none; stroke: #5b6b84; stroke-width: 1.3;
+  transition: stroke .15s; }
+svg.cfg path.back { stroke: var(--red); }
+svg.cfg .node rect { fill: #171c26; stroke: #3b4a63; stroke-width: 1.2;
+  transition: stroke .15s; }
+svg.cfg .node text { fill: #dbe4f0; font-size: 11px; text-anchor: middle; }
+svg.cfg .node text tspan.bn { fill: var(--yellow); font-weight: 600; }
+svg.cfg .node text tspan.c { fill: #8fa3bf; }
+svg.cfg .node.entry rect { stroke: var(--green); }
+svg.cfg .node:hover rect { stroke: var(--accent); }
+svg.cfg path:hover { stroke: var(--accent); }
 table.grid { border-collapse: collapse; width: 100%; font-size: 13px; }
 table.grid th, table.grid td { border: 1px solid var(--border); padding: 4px 8px;
   text-align: left; font-family: var(--mono); font-size: 12px; }

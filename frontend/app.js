@@ -71,10 +71,12 @@ function diffLines(before, after) {
   };
 }
 
-function paneHtml(entries) {
+function paneHtml(entries, kind) {
+  // kind is "del" for the before pane (removed/changed lines, red) and
+  // "add" for the after pane (added/changed lines, green).
   return entries.map(e =>
     e.keep ? escapeHtml(e.text)
-           : `<span class="${e.text.length ? "del" : "add"}">${escapeHtml(e.text)}</span>`
+           : `<span class="${kind}">${escapeHtml(e.text)}</span>`
   ).join("\n");
 }
 
@@ -127,7 +129,11 @@ function renderPipeline(manifest) {
     card.addEventListener("click", () => { location.hash = `#/pass/${card.dataset.id}`; }));
 }
 
+// Final (end-of-pipeline) CFG per lane/function, from the manifest metadata.
+let CURRENT_MANIFEST = null;
+
 async function renderPassDetail(manifest, id) {
+  CURRENT_MANIFEST = manifest;
   const summary = manifest.passes.find(p => p.id === +id);
   if (!summary) { document.getElementById("app").innerHTML = "<p>unknown pass</p>"; return; }
   const data = await loadPass(id);
@@ -174,11 +180,11 @@ function diffTabHtml(data) {
         <div class="diff-pair">
           <div class="diff-pane">
             <div class="head">before</div>
-            <pre>${paneHtml(d.before)}</pre>
+            <pre>${paneHtml(d.before, "del")}</pre>
           </div>
           <div class="diff-pane">
             <div class="head">after</div>
-            <pre>${paneHtml(d.after)}</pre>
+            <pre>${paneHtml(d.after, "add")}</pre>
           </div>
         </div>
       </details>`;
@@ -209,12 +215,161 @@ function regMapTabHtml(data) {
 function cfgTabHtml(data) {
   const fns = Object.entries(data.functions)
     .filter(([fn]) => fnMatchesFilter(fn));
-  return fns.map(([fn, change]) => {
-    const parts = [];
-    if (change.dotBefore) parts.push(`<details class="fn"><summary>${escapeHtml(fn)} · before</summary><pre class="raw">${escapeHtml(change.dotBefore)}</pre></details>`);
-    if (change.dotAfter) parts.push(`<details class="fn" open><summary>${escapeHtml(fn)} · after</summary><pre class="raw">${escapeHtml(change.dotAfter)}</pre></details>`);
-    return parts.join("");
-  }).join("");
+  const finals = ((CURRENT_MANIFEST || {}).metadata || {}).finalCfg || {};
+  const finalCfg = finals[data.lane] || {};
+  const finalFns = Object.keys(finalCfg).filter(fnMatchesFilter);
+  const parts = [];
+  if (finalFns.length) {
+    parts.push(`<h2>final CFG · end of ${data.lane === "mir" ? "machine" : "IR"} pipeline</h2>`);
+    parts.push(finalFns.map(fn => cfgBlockHtml(fn, "final", finalCfg[fn], true)).join(""));
+  }
+  parts.push(fns.map(([fn, change]) => {
+    const out = [];
+    if (change.dotBefore) out.push(cfgBlockHtml(fn, "before", change.dotBefore));
+    if (change.dotAfter) out.push(cfgBlockHtml(fn, "after", change.dotAfter));
+    return out.join("");
+  }).join(""));
+  if (!parts.join("")) {
+    return Object.keys(data.functions).length
+      ? "<p>(no functions match the filter)</p>"
+      : "<p>(no CFG data)</p>";
+  }
+  return parts.join("");
+}
+
+function cfgBlockHtml(fn, side, dot, open) {
+  const svg = cfgSvgHtml(dot);
+  const body = svg
+    ? `<div class="cfg-scroll">${svg}</div>
+       <details><summary>raw DOT</summary><pre class="raw">${escapeHtml(dot)}</pre></details>`
+    : `<p>(empty graph)</p>`;
+  return `<details class="fn" ${open || side === "after" ? "open" : ""}><summary>${escapeHtml(fn)} · ${side}</summary>${body}</details>`;
+}
+
+/* --- CFG graph rendering (layered layout -> SVG, no deps) ----------------- */
+
+const CFG = { cw: 7.4, lh: 13, px: 12, py: 7, gapX: 64, gapY: 26, wrap: 22 };
+
+function parseDot(dot) {
+  const nodes = [], edges = [];
+  for (const line of String(dot || "").split("\n")) {
+    let m = line.match(/^\s*n(\d+) \[label="((?:[^"\\]|\\.)*)"\]\s*;?$/);
+    if (m) {
+      const raw = m[2];
+      nodes.push({ id: +m[1], label: raw.replace(/\\n/g, "\n").replace(/\\(.)/g, "$1") });
+      continue;
+    }
+    m = line.match(/^\s*n(\d+) -> n(\d+);$/);
+    if (m) edges.push([+m[1], +m[2]]);
+  }
+  return { nodes, edges };
+}
+
+function wrapLabel(text, width) {
+  const out = [];
+  for (const part of String(text).split("\n")) {
+    let line = "";
+    for (const word of part.split(" ")) {
+      if (!line) line = word;
+      else if (line.length + 1 + word.length <= width) line += " " + word;
+      else { out.push(line); line = word; }
+    }
+    if (line) out.push(line);
+  }
+  return out.length ? out : [""];
+}
+
+// Longest-path layering (entry = node 0 at layer 0); cycles terminate via
+// the visited set. Back edges (target not strictly below source) are flagged.
+function layoutCfg({ nodes, edges }) {
+  const n = nodes.length;
+  const layer = new Array(n).fill(0);
+  const done = new Array(n).fill(false);
+  const preds = Array.from({ length: n }, () => []);
+  for (const [u, v] of edges) preds[v].push(u);
+  const visit = (v) => {
+    if (done[v]) return;
+    done[v] = true;
+    for (const u of preds[v]) { visit(u); layer[v] = Math.max(layer[v], layer[u] + 1); }
+  };
+  for (let i = 0; i < n; i++) visit(i);
+
+  const back = new Set();
+  for (const [u, v] of edges) if (layer[v] <= layer[u]) back.add(u + ">" + v);
+
+  const byLayerMap = new Map();
+  for (let i = 0; i < n; i++) {
+    const L = layer[i];
+    if (!byLayerMap.has(L)) byLayerMap.set(L, []);
+    byLayerMap.get(L).push(i);
+  }
+  const byLayer = [...byLayerMap.entries()].sort((a, b) => a[0] - b[0]).map(e => e[1]);
+
+  const box = nodes.map(nd => {
+    const lines = wrapLabel(nd.label, CFG.wrap);
+    return { w: Math.max(...lines.map(l => l.length)) * CFG.cw + 2 * CFG.px,
+             h: lines.length * CFG.lh + 2 * CFG.py, lines };
+  });
+
+  const layerH = byLayer.map(l => Math.max(...l.map(i => box[i].h)));
+  const layerY = [];
+  let y = 0;
+  for (let L = 0; L < byLayer.length; L++) { layerY[L] = y; y += layerH[L] + CFG.gapY; }
+
+  const pos = new Array(n);
+  for (let L = 0; L < byLayer.length; L++) {
+    const ids = byLayer[L];
+    const totalW = ids.reduce((s, i) => s + box[i].w, 0) + CFG.gapX * (ids.length - 1);
+    let x = -totalW / 2;
+    for (const i of ids) { pos[i] = { x, y: layerY[L] + (layerH[L] - box[i].h) / 2 }; x += box[i].w + CFG.gapX; }
+  }
+  let minX = 0, maxX = 0;
+  for (let i = 0; i < n; i++) {
+    minX = Math.min(minX, pos[i].x);
+    maxX = Math.max(maxX, pos[i].x + box[i].w);
+  }
+  for (let i = 0; i < n; i++) pos[i].x -= minX;
+  return { pos, box, back, W: maxX - minX, H: layerY[byLayer.length - 1] + layerH[byLayer.length - 1] };
+}
+
+function cfgSvgHtml(dot) {
+  const g = parseDot(dot);
+  if (!g.nodes.length) return "";
+  const laid = layoutCfg(g);
+  const uid = "cfg" + Math.random().toString(36).slice(2, 8);
+  const parts = [
+    `<svg class="cfg" width="${laid.W}" height="${laid.H}" viewBox="0 0 ${laid.W} ${laid.H}" xmlns="http://www.w3.org/2000/svg">`,
+    `<defs><marker id="${uid}-a" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 z"/></marker></defs>`,
+  ];
+  for (const [u, v] of g.edges) {
+    const a = laid.pos[u], b = laid.pos[v], ab = laid.box[u], bb = laid.box[v];
+    const isBack = laid.back.has(u + ">" + v);
+    let d;
+    if (u === v) {
+      const r = 16;
+      d = `M ${a.x + ab.w} ${a.y + ab.h / 2} C ${a.x + ab.w + r} ${a.y + ab.h / 2 - r}, ${a.x + ab.w + r} ${a.y + ab.h / 2 + r}, ${a.x + ab.w} ${a.y + ab.h / 2 + r}`;
+    } else if (isBack) {
+      d = `M ${a.x + ab.w} ${a.y + ab.h / 2} C ${a.x + ab.w + 42} ${a.y + ab.h / 2}, ${b.x + bb.w + 42} ${b.y + bb.h / 2}, ${b.x + bb.w} ${b.y + bb.h / 2}`;
+    } else {
+      const y0 = a.y + ab.h, y1 = b.y, mid = Math.max(24, (y1 - y0) / 2);
+      d = `M ${a.x + ab.w / 2} ${y0} C ${a.x + ab.w / 2} ${y0 + mid}, ${b.x + bb.w / 2} ${y1 - mid}, ${b.x + bb.w / 2} ${y1}`;
+    }
+    parts.push(`<path class="${isBack ? "back" : ""}" d="${d}" marker-end="url(#${uid}-a)"/>`);
+  }
+  for (const nd of g.nodes) {
+    const p = laid.pos[nd.id], b = laid.box[nd.id];
+    parts.push(
+      `<g class="node${nd.id === 0 ? " entry" : ""}" transform="translate(${p.x},${p.y})">` +
+      `<rect width="${b.w}" height="${b.h}" rx="4"/>` +
+      `<text x="${b.w / 2}" y="${CFG.py + CFG.lh / 2}">` +
+      b.lines.map((ln, k) =>
+        `<tspan class="${k === 0 ? "bn" : "c"}" x="${b.w / 2}" dy="${k ? CFG.lh : 0}">${escapeHtml(ln)}</tspan>`
+      ).join("") +
+      `</text></g>`
+    );
+  }
+  parts.push("</svg>");
+  return parts.join("");
 }
 
 /* --- boot ---------------------------------------------------------------- */

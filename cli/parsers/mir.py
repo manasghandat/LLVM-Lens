@@ -29,9 +29,10 @@ MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*
 FUNC_START_RE = re.compile(r"^# Machine code for function (\S+): (.+)$")
 FUNC_END_RE = re.compile(r"^# End machine code for function (\S+)\.$")
 LIVE_INS_RE = re.compile(r"^Function Live Ins: (.+)$")
-# Post-RA dumps prefix blocks with a byte size: "0B\tbb.0 (%ir-block.1):".
+# Post-RA dumps prefix blocks with a byte size: "0B\tbb.0 (%ir-block.1):",
+# and may annotate the ir-block with alignment: "bb.9 (%ir-block.41, align 16):".
 # Block names can contain dots: "bb.2.._crit_edge.loopexit".
-BLOCK_RE = re.compile(r"^(?:\d+B\t)?bb\.([\w.$]+)(?: \(%ir-block\.([\w.$]+)\))?:$")
+BLOCK_RE = re.compile(r"^(?:\d+B\t)?bb\.([\w.$]+)(?: \(%ir-block\.([\w.$]+)(?:, align \d+)?\))?:$")
 SUCCESSORS_RE = re.compile(r"^\s+successors: (.+)$")
 
 # vregs: "%5", "%729:gr32", "%729.sub_32bit:gr64_with_sub_8bit", "%5.sub_32bit"
@@ -124,7 +125,11 @@ def _parse_function(lines: list[str]) -> MachineFunction:
             continue
         match = SUCCESSORS_RE.match(line)
         if match:
-            successors = tuple(re.findall(r"%bb\.(\d+)", match.group(1)))
+            # Successor lines use the short block form ("%bb.1" even when the
+            # block header is "bb.1..lr.ph.preheader"); cfg.py resolves it.
+            # Dedupe: the hex list and the probability tail repeat each block.
+            names = (f"bb.{n}" for n in re.findall(r"%bb\.(\d+)", match.group(1)))
+            successors = tuple(dict.fromkeys(names))
             continue
         if current_block is None or not line.strip():
             continue

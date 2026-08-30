@@ -61,7 +61,11 @@ def test_run_opt_success(toolchain, sample_ir, tmp_path):
 
     final = result.ir_path.read_text()
     assert "define" in final
-    assert "alloca" not in final  # mem2reg promoted every alloca
+    # mem2reg promotes the promotable allocas; volatile and aggregate allocas
+    # (getTime's volatile `a`, main's cpu_set_t / flag[]) correctly survive.
+    assert "alloca i64, align 8" in final  # volatile timing read
+    assert "alloca ptr" not in final
+    assert "alloca i32" not in final
 
     # stderr carries the instrumentation on LLVM 22
     stderr = result.stderr_path.read_text()
