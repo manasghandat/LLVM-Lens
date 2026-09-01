@@ -60,6 +60,7 @@ def opt_command(
     out: Path,
     mtriple: str | None = None,
     load_pass_plugins: tuple[str, ...] = (),
+    print_after: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
 ) -> list[str]:
     """Build the opt invocation for the Lane A pipeline."""
@@ -71,6 +72,10 @@ def opt_command(
     cmd.extend(
         ["-print-changed=quiet", "-debug-pass-manager", "-time-passes"]
     )
+    # -print-after takes a comma-separated list of pass names: force a dump
+    # for named custom passes even when they do not change IR (analysis passes).
+    if print_after:
+        cmd.append(f"-print-after={','.join(print_after)}")
     cmd.extend(extra_args)
     cmd.extend(["-o", str(out), str(input_ir)])
     return cmd
@@ -83,6 +88,7 @@ def run_opt(
     out_dir: str | Path | None = None,
     mtriple: str | None = None,
     load_pass_plugins: tuple[str, ...] = (),
+    print_after: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
     timeout: float = DEFAULT_TIMEOUT,
     toolchain: Toolchain | None = None,
@@ -103,7 +109,8 @@ def run_opt(
     cmd = opt_command(
         toolchain.opt.path, input_ir, passes,
         out=final_ir, mtriple=mtriple,
-        load_pass_plugins=load_pass_plugins, extra_args=extra_args,
+        load_pass_plugins=load_pass_plugins, print_after=print_after,
+        extra_args=extra_args,
     )
     try:
         result = run_capture(cmd, timeout)
@@ -138,6 +145,7 @@ def _main(argv: list[str] | None = None) -> None:
     parser.add_argument("-o", "--out-dir", default=None)
     parser.add_argument("--mtriple", default=None)
     parser.add_argument("--load-pass-plugin", action="append", default=[])
+    parser.add_argument("--print-after", action="append", default=[])
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     args = parser.parse_args(argv)
 
@@ -146,6 +154,7 @@ def _main(argv: list[str] | None = None) -> None:
             args.input_ir, args.passes, out_dir=args.out_dir,
             mtriple=args.mtriple,
             load_pass_plugins=tuple(args.load_pass_plugin),
+            print_after=tuple(args.print_after),
             timeout=args.timeout,
         )
     except OptError as exc:

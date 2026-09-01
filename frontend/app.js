@@ -169,14 +169,16 @@ function renderLaneTabs() {
 function renderPassList() {
   const onlyChanged = document.getElementById("changedOnly").checked;
   const passes = passSummaries().filter(p =>
-    p.lane === STATE.lane && (!onlyChanged || p.changed || p.lane === "mir"));
+    p.lane === STATE.lane &&
+    (!onlyChanged || p.changed || p.lane === "mir" || p.isCustom));
   const rows = passes.map(p => {
     const a = p.analysisCounts || {};
     const idx = String(p.runIndex).padStart(3, "0");
     return `
-      <div class="row ${p.changed ? "" : "dim"} ${p.id === STATE.passId ? "sel" : ""}" data-id="${p.id}">
+      <div class="row ${p.changed || p.isCustom ? "" : "dim"} ${p.id === STATE.passId ? "sel" : ""}" data-id="${p.id}">
         <span class="idx">#${idx}</span>
         <span class="name">${escapeHtml(p.name)}</span>
+        ${p.isCustom ? '<span class="badge" title="custom pass (--custom-pass)">custom</span>' : ""}
         ${p.changed ? '<span class="dot" title="changed IR"></span>' : ""}
         ${p.spillCount ? `<span class="warn" title="${p.spillCount} spills">⚠${p.spillCount}</span>` : ""}
         <span class="stat" title="analyses run / invalidated">+${a.run || 0} −${a.invalidated || 0}</span>
@@ -251,6 +253,7 @@ function renderCtx() {
   const s = currentPassSummary();
   document.getElementById("ctx").innerHTML = s
     ? `${escapeHtml(s.name)} · <span class="fn">#${String(s.runIndex).padStart(3, "0")}</span>`
+      + (s.isCustom ? ' · <span class="badge">custom</span>' : "")
       + (STATE.fn ? ` · fn <span class="fn">${escapeHtml(STATE.fn)}</span>` : "")
     : "no pass selected";
 }
@@ -610,8 +613,10 @@ function renderMeta(manifest) {
   const errors = [];
   if (m.optCrashed) errors.push("opt failed (partial report)");
   if (m.llcCrashed) errors.push("llc failed (partial report)");
+  const plugins = (m.plugins && m.plugins.length)
+    ? `  ·  ${m.plugins.length} plugin${m.plugins.length > 1 ? "s" : ""}` : "";
   document.getElementById("meta").textContent =
-    `${m.source}  ·  ${m.pipeline}  ·  ${m.mtriple || "default triple"}  ·  ${tools}` +
+    `${m.source}  ·  ${m.pipeline}  ·  ${m.mtriple || "default triple"}  ·  ${tools}${plugins}` +
     (errors.length ? "  ·  ⚠ " + errors.join(", ") : "");
 }
 

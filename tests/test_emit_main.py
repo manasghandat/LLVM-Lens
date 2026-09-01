@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cli.diff import FnChange
 from cli.emit import ReportPass, emit_report
-from cli.main import build_lane_a, build_lane_b, build_report
+from cli.main import _effective_pipeline, build_lane_a, build_lane_b, build_report
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -83,6 +83,22 @@ def test_emit_report_missing_frontend_is_tolerated(tmp_path):
     assert (tmp_path / "r" / "data" / "manifest.json").is_file()
 
 
+def test_emit_report_serializes_is_custom(tmp_path):
+    custom = ReportPass(
+        id=9, lane="ir", name="MyCustomPass", pass_id="MyCustomPass",
+        run_index=1, time_ms=None, changed=False, is_custom=True,
+    )
+    manifest = emit_report(
+        tmp_path / "report", passes=[custom],
+        metadata={"source": "a.c", "pipeline": "default<O2>"},
+        frontend_dir=FRONTEND,
+    )
+    data = manifest.parent
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data["passes"][0]["isCustom"] is True
+    assert json.loads((data / "pass-9.json").read_text())["isCustom"] is True
+
+
 # --- lane builders (fixture-based, no toolchain) --------------------------------
 
 
@@ -106,6 +122,24 @@ def test_build_lane_a_on_fixture():
     assert any(p.time_ms is not None for p in passes)  # time-passes attribution
     assert any(p.analyses["run"] for p in passes)
     assert any(p.dots.get("main") and p.dots["main"][1] for p in passes)  # DOT generated
+
+
+def test_build_lane_a_marks_custom():
+    # --custom-pass matches case-insensitively; only the named pass is flagged.
+    passes = build_lane_a(OPT_STDERR, custom_passes=("sroapass",))
+    sroa = next(p for p in passes if p.name == "SROAPass")
+    assert sroa.is_custom
+    assert all(not p.is_custom for p in passes if p.name != "SROAPass")
+
+
+def test_effective_pipeline_appends_function_passes():
+    assert _effective_pipeline("default<O2>", ("mba-add",)) == "default<O2>,function(mba-add)"
+    assert _effective_pipeline("mem2reg", ("mba-add", "strlen")) == \
+        "mem2reg,function(mba-add),function(strlen)"
+    # Dedup on the bare and wrapped forms alike.
+    assert _effective_pipeline("default<O2>,function(mba-add)", ("mba-add",)) == \
+        "default<O2>,function(mba-add)"
+    assert _effective_pipeline("mem2reg,mba-add", ("mba-add",)) == "mem2reg,mba-add"
 
 
 def test_build_lane_b_on_fixture():

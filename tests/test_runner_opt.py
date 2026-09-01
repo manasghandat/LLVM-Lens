@@ -30,12 +30,14 @@ def test_opt_command_flags(tmp_path):
         out=tmp_path / "final.ll",
         mtriple="x86_64",
         load_pass_plugins=("a.so", "b.so"),
+        print_after=("my-pass", "other-pass"),
         extra_args=("-debug-only=loop-vectorize",),
     )
     assert cmd == [
         "/llvm/opt", "-S", "-mtriple=x86_64", "-passes=default<O2>",
         "-load-pass-plugin=a.so", "-load-pass-plugin=b.so",
         "-print-changed=quiet", "-debug-pass-manager", "-time-passes",
+        "-print-after=my-pass,other-pass",
         "-debug-only=loop-vectorize",
         "-o", str(tmp_path / "final.ll"), "in.ll",
     ]

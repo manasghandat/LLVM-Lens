@@ -55,6 +55,44 @@ def _tail(text: str, lines: int = 25) -> str:
     return "\n".join((text or "").splitlines()[-lines:])
 
 
+def _normalize_pass_name(name: str) -> str:
+    """Lowercase and strip non-alphanumerics, so a pass class name ("MBAAdd")
+    matches its -passes alias ("mba-add") for --custom-pass badging."""
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _is_custom(name: str | None, custom_passes: tuple[str, ...]) -> bool:
+    """True when *name* was declared via --custom-pass.
+
+    Matches case- and punctuation-insensitively: a pass whose class name is
+    "MBAAdd" still badges when the user passes its pipeline alias "mba-add".
+    """
+    if not name or not custom_passes:
+        return False
+    key = _normalize_pass_name(name)
+    return any(key and key == _normalize_pass_name(c) for c in custom_passes)
+
+
+def _effective_pipeline(passes: str, custom_passes: tuple[str, ...]) -> str:
+    """Append --custom-pass names as function passes, deduped, order preserved.
+
+    A plugin function-pass name is rejected at module scope (once a module pass
+    like ``default<O2>`` precedes it), so each name is wrapped as
+    ``function(<name>)`` — valid at any pipeline position.
+    """
+    effective = passes
+    existing = {token.strip() for token in effective.split(",")}
+    for name in custom_passes:
+        if name in existing:
+            continue
+        element = f"function({name})"
+        if element in existing:
+            continue
+        effective = f"{effective},{element}"
+        existing.add(element)
+    return effective
+
+
 def _pass_log(stderr: str, start_line: int, end_line: int) -> str:
     """Lines of a pass's stderr slice, with the IR dump bodies stripped."""
     kept: list[str] = []
@@ -112,7 +150,7 @@ def _attribute_time_ms(
     return totals
 
 
-def build_lane_a(stderr: str) -> list[ReportPass]:
+def build_lane_a(stderr: str, custom_passes: tuple[str, ...] = ()) -> list[ReportPass]:
     """Assemble Lane A (opt) passes from the captured stderr."""
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
@@ -185,11 +223,14 @@ def build_lane_a(stderr: str) -> list[ReportPass]:
             analyses=analyses.get(name, {"run": [], "cached": [], "invalidated": []}),
             log=_pass_log(stderr, first_run_line, end_line),
             time_ms=summary_ms.get(name, anchor_ms.get(run_index - 1)),
+            is_custom=_is_custom(name, custom_passes),
         ))
     return passes
 
 
-def build_lane_b(stderr: str, asm_text: str | None = None) -> list[ReportPass]:
+def build_lane_b(
+    stderr: str, asm_text: str | None = None, custom_passes: tuple[str, ...] = ()
+) -> list[ReportPass]:
     """Assemble Lane B (llc) passes from the captured stderr.
 
     llc's machine pass manager runs function-at-a-time: each ``# *** IR Dump
@@ -264,6 +305,8 @@ def build_lane_b(stderr: str, asm_text: str | None = None) -> list[ReportPass]:
             spills=spills,
             log=_mir_log(stderr, first_line, end_line),
             time_ms=summary_ms.get(group[0].pass_name, anchor_ms.get(run_index - 1)),
+            is_custom=_is_custom(group[0].pass_name, custom_passes)
+                      or _is_custom(pass_id, custom_passes),
         ))
 
     _attach_reg_maps(passes, order, by_id, fn_seq)
@@ -323,6 +366,8 @@ def build_report(
     *,
     passes: str = DEFAULT_PASSES,
     load_pass_plugins: tuple[str, ...] = (),
+    load: tuple[str, ...] = (),
+    custom_passes: tuple[str, ...] = (),
     mtriple: str | None = None,
     output: str | Path = "report",
     bin_dir: str | Path | None = None,
@@ -336,28 +381,35 @@ def build_report(
 
     toolchain: Toolchain = discover_toolchain(bin_dir)
 
+    # Custom passes are appended as function passes, force-dumped via
+    # -print-after, and badged in the report.
+    effective_passes = _effective_pipeline(passes, custom_passes)
+
     started = time.perf_counter()
     compiled = compile_to_ir(source, out_dir=raw, toolchain=toolchain, timeout=timeout)
     opt_result = run_opt(
-        compiled.ir_path, passes,
+        compiled.ir_path, effective_passes,
         out_dir=raw, mtriple=mtriple,
         load_pass_plugins=load_pass_plugins,
+        print_after=custom_passes,
         timeout=timeout, toolchain=toolchain,
     )
     opt_stderr = opt_result.stderr_path.read_text(errors="replace")
-    lane_a = build_lane_a(opt_stderr) if not opt_result.timed_out else []
+    lane_a = build_lane_a(opt_stderr, custom_passes) if not opt_result.timed_out else []
 
     lane_b: list[ReportPass] = []
     llc_result = None
     if opt_result.ir_path is not None:
         llc_result = run_llc(
             opt_result.ir_path, out_dir=raw, mtriple=mtriple,
+            load_pass_plugins=load_pass_plugins, load=load,
+            print_after=custom_passes,
             timeout=timeout, toolchain=toolchain,
         )
         if not llc_result.timed_out:
             llc_stderr = llc_result.stderr_path.read_text(errors="replace")
             asm_text = llc_result.asm_path.read_text(errors="replace") if llc_result.asm_path else None
-            lane_b = build_lane_b(llc_stderr, asm_text)
+            lane_b = build_lane_b(llc_stderr, asm_text, custom_passes)
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
@@ -379,7 +431,9 @@ def build_report(
     metadata = {
         "source": str(compiled.source_path),
         "inputKind": compiled.kind,
-        "pipeline": passes,
+        "pipeline": effective_passes,
+        "plugins": list(load_pass_plugins) + list(load),
+        "customPasses": list(custom_passes),
         "mtriple": mtriple,
         "toolVersions": {name: tool.version for name, tool in toolchain.tools.items()},
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -416,7 +470,11 @@ def build_report(
 @click.option("--passes", default=DEFAULT_PASSES, show_default=True,
               help="New-PM pipeline string for opt (Lane A).")
 @click.option("--load-pass-plugin", "load_pass_plugins", multiple=True,
-              help="Pass plugin .so to load (repeatable).")
+              help="New-PM pass plugin .so to load (opt + llc, repeatable).")
+@click.option("--load", "load", multiple=True,
+              help="Legacy plugin .so to load (llc backend only, repeatable).")
+@click.option("--custom-pass", "custom_passes", multiple=True,
+              help="Custom function-pass name to append (as function(<name>)) and badge (repeatable).")
 @click.option("--mtriple", default=None, help="Target triple override, e.g. x86_64.")
 @click.option("-o", "--output", default="report", show_default=True,
               help="Directory to write the report into.")
@@ -428,6 +486,8 @@ def main(
     source: str,
     passes: str,
     load_pass_plugins: tuple[str, ...],
+    load: tuple[str, ...],
+    custom_passes: tuple[str, ...],
     mtriple: str | None,
     output: str,
     bin_dir: str | None,
@@ -444,6 +504,8 @@ def main(
             source,
             passes=passes,
             load_pass_plugins=tuple(load_pass_plugins),
+            load=tuple(load),
+            custom_passes=tuple(custom_passes),
             mtriple=mtriple,
             output=output,
             bin_dir=bin_dir,

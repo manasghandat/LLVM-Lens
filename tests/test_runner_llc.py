@@ -27,6 +27,22 @@ def test_llc_command_flags(tmp_path):
     ]
 
 
+def test_llc_command_plugins(tmp_path):
+    cmd = llc_command(
+        Path("/llvm/llc"), Path("in.ll"),
+        out=tmp_path / "out.s",
+        load_pass_plugins=("a.so",),
+        load=("b.so",),
+        print_after=("my-pass",),
+    )
+    assert cmd == [
+        "/llvm/llc",
+        "-load-pass-plugin=a.so", "-load=b.so", "-print-after=my-pass",
+        "-print-after-all", "-debug-pass=Structure", "-time-passes",
+        "-o", str(tmp_path / "out.s"), "in.ll",
+    ]
+
+
 def test_llc_command_no_s_flag():  # llc emits asm by default; -S is an error
     cmd = llc_command(Path("/llvm/llc"), Path("in.ll"), out=Path("out.s"))
     assert "-S" not in cmd

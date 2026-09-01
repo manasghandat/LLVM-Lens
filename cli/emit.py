@@ -55,6 +55,7 @@ class ReportPass:
     spills: dict[str, int] = field(default_factory=dict)  # mir only: fn -> count
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
     asm: str | None = None  # final assembly text, attached to the last mir pass
+    is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
 
 
 def _pass_json(pass_: ReportPass) -> dict[str, Any]:
@@ -79,6 +80,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
         "runIndex": pass_.run_index,
         "timeMs": pass_.time_ms,
         "changed": pass_.changed,
+        "isCustom": pass_.is_custom,
         "functions": functions,
         "analyses": pass_.analyses,
         "log": pass_.log,
@@ -100,6 +102,7 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "runIndex": p.run_index,
             "timeMs": p.time_ms,
             "changed": p.changed,
+            "isCustom": p.is_custom,
             "spillCount": sum(p.spills.values()) if p.spills else None,
             "analysisCounts": {
                 "run": len(p.analyses.get("run", [])),

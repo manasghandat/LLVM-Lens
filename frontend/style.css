@@ -32,6 +32,8 @@
   --warn: #dcc084;        /* warnings: spills, partial reports */
   --warn-bg: rgba(220, 192, 132, 0.10);
   --entry: #8fd6a4;       /* CFG entry block */
+  --custom: #b78fe0;      /* violet: plugin-loaded custom passes */
+  --custom-bg: rgba(183, 143, 224, 0.12);
 
   --mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
     Menlo, Consolas, monospace;
@@ -178,6 +180,9 @@ body.rail-collapsed .rail-edge { display: none; }
 .row .stat .minus { color: var(--del); }
 .row .stat .plus { color: var(--add); }
 .row .warn { color: var(--warn); font-size: 10px; flex: none; }
+.row .badge { color: var(--custom); background: var(--custom-bg);
+  border: 1px solid var(--custom); font-size: 8px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 1px 4px; border-radius: 2px; flex: none; }
 
 /* signal dots: changed = trace, unchanged = none, spills = warn */
 .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--trace);

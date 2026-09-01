@@ -54,12 +54,22 @@ def llc_command(
     *,
     out: Path,
     mtriple: str | None = None,
+    load_pass_plugins: tuple[str, ...] = (),
+    load: tuple[str, ...] = (),
+    print_after: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
 ) -> list[str]:
     """Build the llc invocation for the Lane B pipeline."""
     cmd = [str(llc)]
     if mtriple:
         cmd.append(f"-mtriple={mtriple}")
+    # New-PM plugin passes (pre-codegen IR passes) and legacy machine passes.
+    cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
+    cmd.extend(f"-load={plugin}" for plugin in load)
+    # -print-after takes a comma-separated list of pass names; force a dump for
+    # named custom passes even when they do not change the function.
+    if print_after:
+        cmd.append(f"-print-after={','.join(print_after)}")
     cmd.extend(["-print-after-all", "-debug-pass=Structure", "-time-passes"])
     cmd.extend(extra_args)
     cmd.extend(["-o", str(out), str(input_ir)])
@@ -71,6 +81,9 @@ def run_llc(
     *,
     out_dir: str | Path | None = None,
     mtriple: str | None = None,
+    load_pass_plugins: tuple[str, ...] = (),
+    load: tuple[str, ...] = (),
+    print_after: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
     timeout: float = DEFAULT_TIMEOUT,
     toolchain: Toolchain | None = None,
@@ -90,7 +103,9 @@ def run_llc(
 
     cmd = llc_command(
         toolchain.llc.path, input_ir,
-        out=asm_path, mtriple=mtriple, extra_args=extra_args,
+        out=asm_path, mtriple=mtriple,
+        load_pass_plugins=load_pass_plugins, load=load, print_after=print_after,
+        extra_args=extra_args,
     )
     try:
         result = run_capture(cmd, timeout)
@@ -123,11 +138,19 @@ def _main(argv: list[str] | None = None) -> None:
     parser.add_argument("input_ir")
     parser.add_argument("-o", "--out-dir", default=None)
     parser.add_argument("--mtriple", default=None)
+    parser.add_argument("--load-pass-plugin", action="append", default=[])
+    parser.add_argument("--load", action="append", default=[])
+    parser.add_argument("--print-after", action="append", default=[])
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     args = parser.parse_args(argv)
 
     try:
-        result = run_llc(args.input_ir, out_dir=args.out_dir, mtriple=args.mtriple, timeout=args.timeout)
+        result = run_llc(
+            args.input_ir, out_dir=args.out_dir, mtriple=args.mtriple,
+            load_pass_plugins=tuple(args.load_pass_plugin),
+            load=tuple(args.load), print_after=tuple(args.print_after),
+            timeout=args.timeout,
+        )
     except LlcError as exc:
         raise SystemExit(f"error: {exc}") from exc
 

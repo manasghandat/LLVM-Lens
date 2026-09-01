@@ -12,6 +12,10 @@ frontend/dist/
 # Reports
 report/
 
+# LLVM pass plugin build artifacts
+*.so
+*.o
+
 # Local configuration
 .env
 .env.local
