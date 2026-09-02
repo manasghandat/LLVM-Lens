@@ -1,8 +1,9 @@
 """Frontend CFG rendering checks.
 
 Runs the browser-free parts of frontend/app.js under node: DOT parsing
-(parseDot), the unified diff builder and renderer (diffOps / diffHunks /
-unifiedDiffHtml), and — using the vendored UMD builds — a headless cytoscape
+(parseDot), the diff builder and its two renderers (diffOps / diffHunks /
+unifiedDiffHtml for the Diff view, irSideHtml for the IR view), and — using
+the vendored UMD builds — a headless cytoscape
 + dagre layout of a CFG with a loop. Skipped when node is not installed.
 """
 
@@ -66,8 +67,9 @@ if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.ex
 console.log("frontend parseDot checks passed");
 """
 
-# Harness for the diff helpers: the unified (git-style) view — op stream with
-# before/after line numbers, hunking with context, and the rendered rows.
+# Harness for the diff helpers: the op stream with before/after line numbers,
+# hunking with context, and both renderers built on it — the unified
+# (git-style) Diff view and the IR view's two whole-snapshot sides.
 DIFF_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
@@ -135,6 +137,29 @@ check("ir rows keep token highlighting",
       unifiedDiffHtml(irHunks).includes('<span class="tok-kw">mul</span>'));
 check("escape safety in rows", unifiedDiffHtml(diffHunks(diffOps("a", '"x<y>"')))
       .includes("&lt;"));
+
+// IR view: each side keeps every line of its own snapshot, numbered on that
+// side, with only that side's changes tinted and no marker column.
+const beforeSide = irSideHtml(ops, "-");
+const afterSide = irSideHtml(ops, "+");
+const rowCount = (h) => (h.match(/class="urow /g) || []).length;
+check("before side has a row per before line", rowCount(beforeSide) === 3);
+check("after side has a row per after line", rowCount(afterSide) === 4);
+check("before side tints removals only",
+      beforeSide.includes('class="urow del"') && !beforeSide.includes('class="urow add"'));
+check("after side tints additions only",
+      afterSide.includes('class="urow add"') && !afterSide.includes('class="urow del"'));
+check("before side numbers the before text",
+      beforeSide.includes('<span class="uln">3</span>') && !beforeSide.includes('>4<'));
+check("after side numbers the after text", afterSide.includes('<span class="uln">4</span>'));
+check("ir sides have no marker column", !beforeSide.includes('class="umark"'));
+check("ir sides keep token highlighting",
+      irSideHtml(diffOps("", "  %1 = add i32 %a, 1"), "+")
+        .includes('<span class="tok-kw">add</span>'));
+check("a missing snapshot yields no rows", irSideHtml(diffOps("", "a"), "-") === "");
+check("an unchanged function still renders both sides",
+      rowCount(irSideHtml(diffOps("a\nb", "a\nb"), "-")) === 2
+      && rowCount(irSideHtml(diffOps("a\nb", "a\nb"), "+")) === 2);
 
 // tokenizer: one realistic IR line produces each token class
 const hl = highlightIR("loop:\n  %r = add i32 %a, 1  ; comment");

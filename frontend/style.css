@@ -214,18 +214,16 @@ body.rail-collapsed .rail-edge { display: none; }
   overflow: hidden; text-overflow: ellipsis; }
 .ctx .fn { color: var(--ink); }
 
-/* split area */
+/* split area: one pane per view; a paired view splits inside its own body */
 .split { display: flex; gap: 5px; flex: 1; min-height: 320px; align-items: stretch; }
-.split.stacked { flex-direction: column; }
 .divider { width: 5px; border-radius: 2px; background: var(--line-strong);
   cursor: col-resize; flex: none; touch-action: none; }
-.split.stacked .divider { width: auto; height: 5px; cursor: row-resize; }
+.stacked > .divider { width: auto; height: 5px; cursor: row-resize; }
 .divider:hover { background: var(--trace); }
 
 .pane { flex: 1; min-width: 0; min-height: 0; background: var(--well);
   border: 1px solid var(--line); border-radius: 2px; display: flex;
   flex-direction: column; }
-.split.stacked .pane { min-height: 220px; }
 
 .pane-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
   border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
@@ -243,8 +241,9 @@ body.rail-collapsed .rail-edge { display: none; }
 
 .cfg-cy { flex: 1; display: flex; flex-direction: column; min-height: 0;
   min-width: 0; padding: 16px 8px 8px; }
-/* "both" source: before and after side by side */
+/* "both" source: before and after side by side (or stacked) */
 .cfg-pair { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.cfg-pair.stacked { flex-direction: column; }
 .cfg-pair .cfg-cy { padding-bottom: 0; }
 .cfg-cy-frame { position: relative; background: var(--well);
   border: 1px solid var(--line); border-radius: 2px; flex: 1; min-height: 0;
@@ -325,6 +324,28 @@ body.rail-collapsed .rail-edge { display: none; }
 .urow.add .umark { color: var(--add); font-weight: 700; }
 .urow.del .umark { color: var(--del); font-weight: 700; }
 
+/* --- IR view: the whole before/after snapshots ---------------------------- */
+/* Rows reuse the diff primitives above (.urow/.uln/.utext and the add/del
+ * tints); each side gets one gutter -- its own line numbers -- and no marker
+ * column, since the frame already says which side it is. */
+
+.irpair { flex: 1; display: flex; gap: 5px; min-height: 0; min-width: 0;
+  padding: 10px; }
+.irpair.stacked { flex-direction: column; }
+.irside { flex: 1; min-width: 0; min-height: 0; display: flex;
+  flex-direction: column; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 2px; overflow: hidden; }
+.irpair.stacked .irside { min-height: 120px; }
+.irside-head { display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 8px; color: var(--dim); font-size: 9px; letter-spacing: 0.12em;
+  text-transform: uppercase; border-bottom: 1px solid var(--line); flex: none; }
+.irside-head .count { font-size: 10px; color: var(--faint);
+  font-variant-numeric: tabular-nums; }
+.irside-head .count.minus { color: var(--del); }
+.irside-head .count.plus { color: var(--add); }
+/* the .irside frame is the chrome; the scroller inside it is bare */
+.irside .udiff { border: 0; border-radius: 0; min-height: 0; }
+
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
 
 .tok-kw   { color: #7fa8e0; }                       /* opcodes, linkage, attrs */
@@ -394,8 +415,9 @@ table.grid td { border: 1px solid var(--line); padding: 3px 8px; font-size: 12px
   .rail-panels { display: flex !important; overflow: visible; }
   .rail-edge { display: none !important; }
   .split { flex-direction: column; min-height: 0; }
-  .split .divider { display: none; }
+  .divider { display: none; }
   .split .pane { min-height: 300px; }
+  .irpair, .cfg-pair { flex-direction: column; }
   #topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; }
   .meta { order: 3; flex-basis: 100%; }
 }

@@ -1,9 +1,9 @@
 /* LLVM-Lens report viewer. Single-screen workstation, file://-safe.
  * Left rail: pass list (lane tabs: IR / machine) + function list, both
- * collapsible. Right: split main view with CFG and Diff panes (the diff is
- * unified/git-style: hunks, line numbers, +/- markers) side by side or
- * stacked with a draggable divider, and a collapsible bottom panel with
- * Log / Analyses / RegMap / Asm tabs.
+ * collapsible. Right: the main view, one of three -- CFG (cytoscape graphs),
+ * Diff (unified/git-style: hunks, line numbers, +/- markers) or IR (the whole
+ * before/after snapshots, side by side or stacked with a draggable divider)
+ * -- plus a collapsible bottom panel with Log / Analyses / RegMap / Asm tabs.
  *
  * Data: fetch('data/manifest.json') first; browsers block fetch() on
  * file:// URLs, so we fall back to the sibling .js wrappers emitted by
@@ -201,6 +201,21 @@ function unifiedDiffHtml(hunks) {
   }).join("");
 }
 
+// One side of the IR view: every line of that snapshot, numbered on its own
+// side, with the lines this pass touched tinted. `mark` picks the side --
+// "-" keeps context plus removals (the before text), "+" context plus
+// additions. Nothing is collapsed: this view is for reading the whole
+// function, not just the change.
+function irSideHtml(ops, mark) {
+  return ops.filter(o => o.op === " " || o.op === mark).map(o => {
+    const cls = o.op === " " ? "uctx" : (mark === "+" ? "add" : "del");
+    return `<div class="urow ${cls}">`
+      + `<span class="uln">${mark === "+" ? o.b : o.a}</span>`
+      + `<code class="utext">${highlightIR(o.text) || "&nbsp;"}</code>`
+      + "</div>";
+  }).join("");
+}
+
 /* --- llvm ir highlighting -------------------------------------------------- */
 
 // Token vocabulary modeled on the llvm-syntax-highlighting TextMate grammar
@@ -257,7 +272,7 @@ let STATE = {
   lane: "ir",                // "ir" | "mir" — active lane tab
   passId: null,              // selected pass id (manifest)
   fn: null,                  // selected function name
-  mode: "both",              // main view: "cfg" | "diff" | "both"
+  mode: "diff",              // main view: "cfg" | "diff" | "ir" (not the lane)
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
   diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
@@ -379,8 +394,11 @@ function updateViewHead() {
   const set = (el, on) => { el.classList.toggle("on", on); el.classList.toggle("off", !on); };
   document.querySelectorAll("#modeCtl .chip").forEach(b =>
     set(b, b.dataset.mode === STATE.mode));
-  // Orientation only applies when both panes are shown.
-  document.getElementById("splitCtl").classList.toggle("inactive", STATE.mode !== "both");
+  // Orientation only applies where a view shows a pair: the IR view's
+  // before/after snapshots, and the CFG view with both graphs.
+  const paired = STATE.mode === "ir"
+    || (STATE.mode === "cfg" && STATE.cfgSource === "both");
+  document.getElementById("splitCtl").classList.toggle("inactive", !paired);
   set(document.getElementById("splitSide"), STATE.orientation === "side");
   set(document.getElementById("splitStack"), STATE.orientation === "stack");
 }
@@ -412,8 +430,9 @@ function cfgPaneHtml() {
   const chips = srcs.map(s =>
     `<button class="ptab ${s === STATE.cfgSource ? "active" : ""}" data-src="${s}">${s}</button>`
   ).join("");
+  const stacked = STATE.orientation === "stack" ? " stacked" : "";
   const body = STATE.cfgSource === "both"
-    ? `<div class="cfg-pair">${cfgBodyHtml(dotBefore, "before")}${cfgBodyHtml(dotAfter, "after")}</div>`
+    ? `<div class="cfg-pair${stacked}">${cfgBodyHtml(dotBefore, "before")}${cfgBodyHtml(dotAfter, "after")}</div>`
     : cfgBodyHtml(STATE.cfgSource === "before" ? dotBefore : dotAfter, STATE.cfgSource);
   return pane("CFG", chips, "", body);
 }
@@ -450,23 +469,47 @@ function diffPaneHtml() {
   return pane("DIFF", chips, stat, body);
 }
 
+// The whole IR, both sides, nothing collapsed -- the Diff view answers "what
+// did this pass touch", this one answers "what does the function look like".
+// An unchanged function still renders: both sides, no tint.
+function irPaneHtml() {
+  const ch = fnChange(STATE.fn);
+  if (!ch) return pane("IR", "", "", '<div class="cfg-empty">(select a function)</div>');
+  const { ops, del, add } = diffStat(ch.before, ch.after);
+  const side = (label, mark, count, empty) => `
+    <div class="irside">
+      <div class="irside-head">
+        <span>${label}</span>
+        <span class="count ${mark === "+" ? "plus" : "minus"}">${
+          count ? (mark === "+" ? "+" : "−") + count : "—"}</span>
+      </div>
+      <div class="udiff"><div class="ubody">${
+        irSideHtml(ops, mark) || `<div class="cfg-empty">${empty}</div>`}</div></div>
+    </div>`;
+  const stat = ch.changed
+    ? `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`
+    : `unchanged · ${escapeHtml(STATE.fn)}`;
+  const body = `
+    <div class="irpair${STATE.orientation === "stack" ? " stacked" : ""}">
+      ${side("before", "-", del, "(no prior snapshot)")}
+      <div class="divider" title="drag to resize"></div>
+      ${side("after", "+", add, "(empty)")}
+    </div>`;
+  return pane("IR", "", stat, body);
+}
+
 function renderMain() {
-  updateViewHead();
   renderCtx();
   destroyCfgGraphs();
   const split = document.getElementById("split");
-  split.className = "split" + (STATE.orientation === "stack" ? " stacked" : "");
-  const panes = [];
-  if (STATE.mode !== "diff") panes.push(cfgPaneHtml());
-  if (STATE.mode !== "cfg") panes.push(diffPaneHtml());
-  split.innerHTML = panes.length === 2
-    ? panes[0] + '<div class="divider" title="drag to resize"></div>' + panes[1]
-    : panes.join("");
-  const first = split.querySelector(".pane");
-  if (panes.length === 2 && first) {
-    first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
-  }
+  split.innerHTML =
+    STATE.mode === "cfg" ? cfgPaneHtml()
+      : STATE.mode === "diff" ? diffPaneHtml()
+        : irPaneHtml();
+  const first = split.querySelector(".irpair > .irside");
+  if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
+  updateViewHead();  // after the panes: cfgPaneHtml may correct cfgSource
 }
 
 /* --- bottom panel ---------------------------------------------------------- */
@@ -821,28 +864,33 @@ document.getElementById("railExpand").addEventListener("click", () => {
   resizeGraphs();
 });
 
-// Split divider drag: the first pane's share follows the pointer.
+// Divider drag: the element just before the divider takes the space, in
+// whichever container holds it (today the IR view's before/after pair).
 {
   const splitEl = document.getElementById("split");
   splitEl.addEventListener("pointerdown", evt => {
-    if (!evt.target.closest(".divider")) return;
-    if (splitEl.querySelectorAll(".pane").length < 2) return;
-    const stacked = splitEl.classList.contains("stacked");
-    const first = splitEl.querySelector(".pane");
-    const rect = splitEl.getBoundingClientRect();
+    const divider = evt.target.closest(".divider");
+    if (!divider) return;
+    const container = divider.parentElement;
+    const first = divider.previousElementSibling;
+    if (!container || !first) return;
+    const stacked = container.classList.contains("stacked");
+    const rect = container.getBoundingClientRect();
     const total = stacked ? rect.height : rect.width;
     const startPos = stacked ? evt.clientY : evt.clientX;
     const startSize = stacked
       ? first.getBoundingClientRect().height
       : first.getBoundingClientRect().width;
+    // Keep the ratio in a variable: re-reading it out of style.flex picks up
+    // the "0" of the "0 0 62.5%" shorthand, not the basis.
+    let ratio = STATE.splitRatio;
     const move = e => {
       const delta = (stacked ? e.clientY : e.clientX) - startPos;
-      const ratio = Math.min(0.85, Math.max(0.15, (startSize + delta) / total));
+      ratio = Math.min(0.85, Math.max(0.15, (startSize + delta) / total));
       first.style.flex = `0 0 ${(ratio * 100).toFixed(1)}%`;
     };
     const up = () => {
-      const m = first.style.flex.match(/[\d.]+/);
-      if (m) STATE.splitRatio = parseFloat(m[0]) / 100;
+      STATE.splitRatio = ratio;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       resizeGraphs();  // graphs track the new pane size
