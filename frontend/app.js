@@ -732,8 +732,10 @@ function mountCfg(el, dot) {
 
 function renderMeta(manifest) {
   const m = manifest.metadata;
-  const tools = Object.values(m.toolVersions || {}).map(v =>
-    v.replace(/\s*\(.*\)$/, "")).join(" · ");
+  // opt, llc and llvm-dis all report the same "LLVM version X" string, so
+  // list each distinct version once instead of repeating it per tool.
+  const tools = [...new Set(Object.values(m.toolVersions || {}).map(v =>
+    v.replace(/\s*\(.*\)$/, "")))].join(" · ");
   const errors = [];
   if (m.optCrashed) errors.push("opt failed (partial report)");
   if (m.llcCrashed) errors.push("llc failed (partial report)");
