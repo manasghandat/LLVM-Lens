@@ -1,9 +1,9 @@
 """Frontend CFG rendering checks.
 
 Runs the browser-free parts of frontend/app.js under node: DOT parsing
-(parseDot), the diff pane coloring (paneHtml), and — using the vendored UMD
-builds — a headless cytoscape + dagre layout of a CFG with a loop. Skipped
-when node is not installed.
+(parseDot), the unified diff builder and renderer (diffOps / diffHunks /
+unifiedDiffHtml), and — using the vendored UMD builds — a headless cytoscape
++ dagre layout of a CFG with a loop. Skipped when node is not installed.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.ex
 console.log("frontend parseDot checks passed");
 """
 
-# Harness for the diff helpers: additions must be green ("add") in the after
-# pane and deletions red ("del") in the before pane.
+# Harness for the diff helpers: the unified (git-style) view — op stream with
+# before/after line numbers, hunking with context, and the rendered rows.
 DIFF_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
@@ -77,21 +77,64 @@ if (start < 0 || end < 0) { console.error("diff section not found"); process.exi
 const code =
   "const escapeHtml = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));\n" +
   src.slice(start, end);
-eval(code);
+// Function declarations in a sloppy-mode eval leak into this scope, but
+// `const` does not: re-read DIFF_CONTEXT from the eval completion value.
+const DIFF_CONTEXT = eval(code + "\nDIFF_CONTEXT;");
 const failures = [];
 const check = (name, cond) => { if (!cond) failures.push(name); };
 
-const d = diffLines("int x;\nint y;\nreturn 0;", "int x;\nint z;\nint w;\nreturn 0;");
-const b = paneHtml(d.before, "del");
-const a = paneHtml(d.after, "add");
-check("removed line marked del in before pane", b.includes('class="del"'));
-check("added lines marked add in after pane", a.includes('class="add"'));
-check("no add marks in before pane", !b.includes('class="add"'));
-check("no del marks in after pane", !a.includes('class="del"'));
-check("exactly one removed line", (b.match(/class="del"/g) || []).length === 1);
-check("exactly two added lines", (a.match(/class="add"/g) || []).length === 2);
-check("kept text survives tokenizing", b.replace(/<[^>]+>/g, "") === "int x;\nint y;\nreturn 0;");
-check("numbers tokenized", b.includes('class="tok-num"') && a.includes('class="tok-num"'));
+const ops = diffOps("int x;\nint y;\nreturn 0;", "int x;\nint z;\nint w;\nreturn 0;");
+const marks = ops.map(o => o.op).join("");
+check("one removal, two additions, two context lines", marks === " -++ ");
+check("removals precede additions in a change block", marks.indexOf("-") < marks.indexOf("+"));
+check("context keeps both line numbers", ops[0].a === 1 && ops[0].b === 1);
+check("removed line has no after number", ops[1].a === 2 && ops[1].b === null);
+check("added lines have no before number", ops[2].a === null && ops[2].b === 2);
+check("trailing context renumbered per side", ops[4].a === 3 && ops[4].b === 4);
+check("removed text carried", ops[1].text === "int y;");
+
+const stat = diffStat("a\nb", "a\nc");
+check("stat counts one del and one add", stat.del === 1 && stat.add === 1);
+
+// A change in a long function collapses to one hunk with DIFF_CONTEXT lines
+// of context on each side; the rest is hidden.
+const long = Array.from({ length: 40 }, (_, i) => "line " + i);
+const edited = long.slice();
+edited[20] = "line 20 changed";
+const bigOps = diffOps(long.join("\n"), edited.join("\n"));
+const hunks = diffHunks(bigOps, DIFF_CONTEXT);
+check("one hunk for one edit", hunks.length === 1);
+check("hunk is context + change only", hunks[0].rows.length === 2 * DIFF_CONTEXT + 2);
+check("hunk reports hidden lines", hunks[0].hidden === 20 - DIFF_CONTEXT);
+check("hunk header ranges", hunks[0].header === "@@ -18,7 +18,7 @@");
+check("full context yields a single whole-function hunk",
+      diffHunks(bigOps, Infinity)[0].rows.length === 41);
+check("unchanged text has no hunks", diffHunks(diffOps("a\nb", "a\nb")).length === 0);
+
+// Empty "before" (a function's first snapshot) is all additions, not a diff
+// against one empty line.
+const fresh = diffOps("", "a\nb");
+check("empty before -> only additions", fresh.map(o => o.op).join("") === "++");
+check("trailing newline is not a phantom line",
+      diffOps("a\n", "a\nb\n").filter(o => o.op === "+").length === 1);
+
+const html = unifiedDiffHtml(hunks);
+check("hunk header rendered", html.includes("@@ -18,7 +18,7 @@"));
+check("hidden-line note rendered", html.includes("17 unchanged lines hidden"));
+check("added row marked", html.includes('class="urow add"'));
+check("removed row marked", html.includes('class="urow del"'));
+check("context rows marked", html.includes('class="urow uctx"'));
+check("no bare ctx class (collides with the view's .ctx rule)",
+      !html.includes('class="urow ctx"'));
+check("line-number gutters emitted", (html.match(/class="uln"/g) || []).length === 2 * 8);
+check("markers emitted", html.includes(">+<") && html.includes(">-<"));
+check("code tokenized inside rows", html.includes('class="tok-num"'));
+
+const irHunks = diffHunks(diffOps("  %1 = add i32 %a, 1", "  %1 = mul i32 %a, 2"));
+check("ir rows keep token highlighting",
+      unifiedDiffHtml(irHunks).includes('<span class="tok-kw">mul</span>'));
+check("escape safety in rows", unifiedDiffHtml(diffHunks(diffOps("a", '"x<y>"')))
+      .includes("&lt;"));
 
 // tokenizer: one realistic IR line produces each token class
 const hl = highlightIR("loop:\n  %r = add i32 %a, 1  ; comment");
@@ -106,6 +149,7 @@ check("ir: escape safety", highlightIR('"a<b>" ; x').includes('&lt;'));
 if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
 console.log("frontend diff checks passed");
 """
+
 
 # Harness for the vendored graph stack: load cytoscape + dagre + the
 # cytoscape-dagre UMD registration under node, run a headless dagre layout on

@@ -1,7 +1,8 @@
 /* LLVM-Lens report viewer. Single-screen workstation, file://-safe.
  * Left rail: pass list (lane tabs: IR / machine) + function list, both
- * collapsible. Right: split main view with CFG and Diff panes (side by side
- * or stacked, draggable divider), and a collapsible bottom panel with
+ * collapsible. Right: split main view with CFG and Diff panes (the diff is
+ * unified/git-style: hunks, line numbers, +/- markers) side by side or
+ * stacked with a draggable divider, and a collapsible bottom panel with
  * Log / Analyses / RegMap / Asm tabs.
  *
  * Data: fetch('data/manifest.json') first; browsers block fetch() on
@@ -49,28 +50,155 @@ async function loadPass(id) {
 
 /* --- diff helpers -------------------------------------------------------- */
 
-// Longest common subsequence; returns equality mask over before/after lines.
-function lcsMask(before, after) {
-  const n = before.length, m = after.length;
+// Unified, git-style diffs: an op stream (context / removed / added lines
+// with their before/after line numbers), collapsed into hunks with a few
+// lines of context around each change. Rendering lives in unifiedDiffHtml.
+
+const DIFF_CONTEXT = 3;   // unchanged lines kept around a change (git default)
+
+function splitLines(text) {
+  if (!text) return [];
+  return String(text).replace(/\n$/, "").split("\n");
+}
+
+// Git prints every removal of a change block before that block's additions;
+// the LCS walk below can interleave them, so regroup each run of changes.
+function groupChanges(ops) {
+  const out = [];
+  let run = [];
+  const flush = () => {
+    if (run.length) {
+      out.push(...run.filter(o => o.op === "-"), ...run.filter(o => o.op === "+"));
+      run = [];
+    }
+  };
+  for (const op of ops) {
+    if (op.op === " ") { flush(); out.push(op); } else run.push(op);
+  }
+  flush();
+  return out;
+}
+
+// Line diff -> [{ op: " " | "-" | "+", text, a, b }], where a/b are 1-based
+// line numbers in the before/after text (null on the side lacking the line).
+function diffOps(beforeText, afterText) {
+  const A = splitLines(beforeText), B = splitLines(afterText);
+
+  // Trim the common head and tail before the O(n*m) table below: a pass
+  // usually rewrites a few lines in the middle of an otherwise equal
+  // function, so this keeps the table small on real IR.
+  let head = 0;
+  while (head < A.length && head < B.length && A[head] === B[head]) head++;
+  let tail = 0;
+  while (tail < A.length - head && tail < B.length - head
+         && A[A.length - 1 - tail] === B[B.length - 1 - tail]) tail++;
+
+  const a = A.slice(head, A.length - tail);
+  const b = B.slice(head, B.length - tail);
+  const n = a.length, m = b.length;
+
+  // dp[i][j] = LCS length of a[i:] and b[j:].
   const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--)
     for (let j = m - 1; j >= 0; j--)
-      dp[i][j] = before[i] === after[j]
+      dp[i][j] = a[i] === b[j]
         ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const mask = { before: new Array(n).fill(false), after: new Array(m).fill(false) };
-  for (let i = 0, j = 0; i < n && j < m; ) {
-    if (before[i] === after[j]) { mask.before[i] = mask.after[j] = true; i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+
+  const ops = [];
+  for (let k = 0; k < head; k++)
+    ops.push({ op: " ", text: A[k], a: k + 1, b: k + 1 });
+
+  const middle = [];
+  for (let i = 0, j = 0; i < n || j < m; ) {
+    if (i < n && j < m && a[i] === b[j]) {
+      middle.push({ op: " ", text: a[i], a: head + i + 1, b: head + j + 1 });
+      i++; j++;
+    } else if (j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1])) {
+      middle.push({ op: "-", text: a[i], a: head + i + 1, b: null });
+      i++;
+    } else {
+      middle.push({ op: "+", text: b[j], a: null, b: head + j + 1 });
+      j++;
+    }
   }
-  return mask;
+  ops.push(...groupChanges(middle));
+
+  for (let k = 0; k < tail; k++)
+    ops.push({
+      op: " ", text: A[A.length - tail + k],
+      a: A.length - tail + k + 1, b: B.length - tail + k + 1,
+    });
+  return ops;
 }
 
-function diffLines(before, after) {
-  const mask = lcsMask(before.split("\n"), after.split("\n"));
+function diffStat(beforeText, afterText) {
+  const ops = diffOps(beforeText, afterText);
   return {
-    before: before.split("\n").map((t, i) => ({ text: t, keep: mask.before[i] })),
-    after: after.split("\n").map((t, i) => ({ text: t, keep: mask.after[i] })),
+    ops,
+    del: ops.filter(o => o.op === "-").length,
+    add: ops.filter(o => o.op === "+").length,
   };
+}
+
+// Collapse unchanged stretches into hunks keeping `context` lines around each
+// change. Infinite context yields a single hunk covering the whole function.
+// Each hunk carries its @@ header plus how many lines were hidden before it.
+function diffHunks(ops, context = DIFF_CONTEXT) {
+  const keep = new Array(ops.length).fill(false);
+  let changes = 0;
+  ops.forEach((op, i) => {
+    if (op.op === " ") return;
+    changes++;
+    for (let k = Math.max(0, i - context);
+         k <= Math.min(ops.length - 1, i + context); k++) keep[k] = true;
+  });
+  if (!changes) return [];
+
+  const hunks = [];
+  let current = null, hidden = 0;
+  for (let i = 0; i < ops.length; i++) {
+    if (!keep[i]) { current = null; hidden++; continue; }
+    if (!current) { current = { rows: [], hidden }; hunks.push(current); hidden = 0; }
+    current.rows.push(ops[i]);
+  }
+
+  for (const hunk of hunks) {
+    const olds = hunk.rows.filter(r => r.op !== "+");
+    const news = hunk.rows.filter(r => r.op !== "-");
+    hunk.oldStart = olds.length ? olds[0].a : 0;
+    hunk.newStart = news.length ? news[0].b : 0;
+    hunk.oldCount = olds.length;
+    hunk.newCount = news.length;
+    hunk.header =
+      `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`;
+  }
+  return hunks;
+}
+
+// One unified diff: per hunk an @@ header row, then rows of
+// [old line no.][new line no.][+/-/space marker][tokenized line].
+function unifiedDiffHtml(hunks) {
+  return hunks.map(hunk => {
+    const hidden = hunk.hidden
+      ? `<span class="uskip">${hunk.hidden} unchanged `
+        + `line${hunk.hidden === 1 ? "" : "s"} hidden</span>`
+      : "";
+    const rows = hunk.rows.map(row => {
+      // Namespaced classes: a bare "ctx" would collide with the view's own
+      // .ctx rule, whose overflow:hidden would break the sticky gutter.
+      const cls = row.op === "+" ? "add" : row.op === "-" ? "del" : "uctx";
+      const body = highlightIR(row.text);
+      return `<div class="urow ${cls}">`
+        + `<span class="uln">${row.a || ""}</span>`
+        + `<span class="uln">${row.b || ""}</span>`
+        + `<span class="umark">${row.op === " " ? "&nbsp;" : row.op}</span>`
+        + `<code class="utext">${body || "&nbsp;"}</code>`
+        + "</div>";
+    }).join("");
+    return `<div class="uhunk"><div class="uhead">`
+      + `<span class="usticky"><span class="uhh">${escapeHtml(hunk.header)}</span>`
+      + `${hidden}</span></div>${rows}</div>`;
+  }).join("");
 }
 
 /* --- llvm ir highlighting -------------------------------------------------- */
@@ -121,16 +249,6 @@ function highlightIR(text) {
   }).join("\n");
 }
 
-function paneHtml(entries, kind) {
-  // kind is "del" for the before pane (removed/changed lines, red) and
-  // "add" for the after pane (added/changed lines, green). Lines are
-  // tokenized for LLVM IR; the wrapper carries the diff signal.
-  return entries.map(e => {
-    const body = highlightIR(e.text);
-    return e.keep ? body : `<span class="${kind}">${body}</span>`;
-  }).join("\n");
-}
-
 /* --- views ---------------------------------------------------------------- */
 
 // Workspace state. One screen, no routes: lane tabs and the function list
@@ -142,6 +260,7 @@ let STATE = {
   mode: "both",              // main view: "cfg" | "diff" | "both"
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
+  diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
@@ -221,9 +340,7 @@ function renderFnList() {
     const changed = ch && ch.changed;
     let stat = "";
     if (changed) {
-      const d = diffLines(ch.before, ch.after);
-      const del = d.before.filter(e => !e.keep).length;
-      const add = d.after.filter(e => !e.keep).length;
+      const { del, add } = diffStat(ch.before, ch.after);
       stat = `<span class="stat"><span class="minus">−${del}</span> <span class="plus">+${add}</span></span>`;
     }
     return `
@@ -308,22 +425,29 @@ function diffPaneHtml() {
     return pane("DIFF", "", "",
       `<div class="cfg-empty">(${escapeHtml(STATE.fn)} unchanged — nothing to diff)</div>`);
   }
-  const d = diffLines(ch.before, ch.after);
-  const del = d.before.filter(e => !e.keep).length;
-  const add = d.after.filter(e => !e.keep).length;
+  const { ops, del, add } = diffStat(ch.before, ch.after);
+  const full = STATE.diffContext === "full";
+  const hunks = diffHunks(ops, full ? Infinity : DIFF_CONTEXT);
+  const chips = ["hunks", "full"].map(v =>
+    `<button class="ptab ${v === STATE.diffContext ? "active" : ""}" data-ctx="${v}">${v}</button>`
+  ).join("");
   const stat = `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`;
+  const fn = escapeHtml(STATE.fn);
+  // .ubody spans the widest row, so every bar and row tint reaches the full
+  // scroll width; the sticky bits inside slide against it.
   const body = `
-    <div class="dpair">
-      <div class="diff-pane">
-        <div class="head"><span>before</span><span class="count del">−${del}</span></div>
-        <pre>${paneHtml(d.before, "del")}</pre>
-      </div>
-      <div class="diff-pane">
-        <div class="head"><span>after</span><span class="count add">+${add}</span></div>
-        <pre>${paneHtml(d.after, "add")}</pre>
+    <div class="udiff-wrap">
+      <div class="udiff">
+        <div class="ubody">
+          <div class="ufile"><span class="usticky">
+            <span class="uf-a">--- before/${fn}</span>
+            <span class="uf-b">+++ after/${fn}</span>
+          </span></div>
+          ${unifiedDiffHtml(hunks)}
+        </div>
       </div>
     </div>`;
-  return pane("DIFF", "", stat, body);
+  return pane("DIFF", chips, stat, body);
 }
 
 function renderMain() {
@@ -670,12 +794,13 @@ document.getElementById("splitStack").addEventListener("click", () => {
   renderMain();
 });
 
-// CFG source chips (before / after / final) live inside the rebuilt pane.
+// Pane chips live inside the rebuilt panes: CFG source (before / after /
+// both) and diff context (hunks / full).
 document.getElementById("split").addEventListener("click", evt => {
-  const b = evt.target.closest(".ptab[data-src]");
-  if (!b) return;
-  STATE.cfgSource = b.dataset.src;
-  renderMain();
+  const src = evt.target.closest(".ptab[data-src]");
+  if (src) { STATE.cfgSource = src.dataset.src; renderMain(); return; }
+  const ctx = evt.target.closest(".ptab[data-ctx]");
+  if (ctx) { STATE.diffContext = ctx.dataset.ctx; renderMain(); }
 });
 
 // Bottom panel collapse + tab switching.

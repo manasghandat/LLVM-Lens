@@ -278,26 +278,52 @@ body.rail-collapsed .rail-edge { display: none; }
 
 .cfg-empty { color: var(--dim); padding: 14px; font-size: 12px; }
 
-/* --- Diff pane ------------------------------------------------------------- */
+/* --- Diff pane: unified, git-style ---------------------------------------- */
 
-.dpair { display: flex; gap: 8px; flex: 1; min-height: 0; padding: 10px; }
-.diff-pane { flex: 1; min-width: 0; background: var(--panel2);
-  border: 1px solid var(--line); border-radius: 2px; overflow: hidden;
-  display: flex; flex-direction: column; }
-.diff-pane .head { display: flex; justify-content: space-between; align-items: center;
-  padding: 5px 8px; color: var(--dim); font-size: 9px;
-  letter-spacing: 0.12em; text-transform: uppercase;
-  border-bottom: 1px solid var(--line); flex: none; }
-.diff-pane .head .count { font-size: 10px; color: var(--faint);
-  font-variant-numeric: tabular-nums; }
-.diff-pane .head .count.del { color: var(--del); }
-.diff-pane .head .count.add { color: var(--add); }
-.diff-pane pre { margin: 0; padding: 8px 10px; overflow: auto; flex: 1;
-  font-size: 12px; }
-.diff-pane pre .add { background: var(--add-bg); display: block;
-  box-shadow: inset 2px 0 0 var(--add); }
-.diff-pane pre .del { background: var(--del-bg); display: block;
-  box-shadow: inset 2px 0 0 var(--del); }
+.udiff-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; padding: 10px; }
+.udiff { flex: 1; min-width: 0; overflow: auto; background: var(--panel2);
+  border: 1px solid var(--line); border-radius: 2px;
+  font-size: 12px; line-height: 1.5; padding-bottom: 6px;
+  /* gutter geometry; the sticky offsets below are derived from these */
+  --uln-w: 42px; --umark-w: 16px; }
+
+.ubody { width: max-content; min-width: 100%; }
+
+.usticky { position: sticky; left: 0; z-index: 2;
+  display: flex; align-items: baseline; gap: 14px; padding: 0 10px; }
+
+/* --- / +++ header, git's file pair */
+.ufile { display: flex; padding: 6px 0; font-size: 10px; letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+.uf-a { color: var(--del); }
+.uf-b { color: var(--add); }
+
+/* @@ -a,b +c,d @@ hunk header, and the count of lines it skipped */
+.uhead { display: flex; padding: 3px 0; background: var(--panel);
+  border-bottom: 1px solid var(--line); color: var(--trace); }
+.uhunk + .uhunk .uhead { border-top: 1px solid var(--line); }
+.uhh { font-variant-numeric: tabular-nums; }
+.uskip { color: var(--faint); font-size: 10px; letter-spacing: 0.04em; }
+
+.urow { display: flex; min-width: 100%; white-space: pre; }
+.uln { flex: none; width: var(--uln-w); padding: 0 6px; text-align: right;
+  color: var(--faint); font-variant-numeric: tabular-nums; user-select: none;
+  position: sticky; z-index: 1; background: var(--panel2); }
+.uln:first-child { left: 0; }
+.uln:nth-child(2) { left: var(--uln-w); }
+.umark { flex: none; width: var(--umark-w); padding-left: 4px; user-select: none;
+  position: sticky; left: calc(2 * var(--uln-w)); z-index: 1;
+  background: var(--panel2); color: var(--faint); }
+.utext { padding: 0 10px 0 4px; }
+
+.urow.add { background: var(--add-bg); }
+.urow.del { background: var(--del-bg); }
+.urow.add .uln, .urow.add .umark {
+  background: linear-gradient(var(--add-bg), var(--add-bg)) var(--panel2); }
+.urow.del .uln, .urow.del .umark {
+  background: linear-gradient(var(--del-bg), var(--del-bg)) var(--panel2); }
+.urow.add .umark { color: var(--add); font-weight: 700; }
+.urow.del .umark { color: var(--del); font-weight: 700; }
 
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
 
