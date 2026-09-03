@@ -7,7 +7,7 @@ from pathlib import Path
 from cli.parsers.debug_pass_manager import parse_pass_runs
 from cli.parsers.legacy_pass_structure import parse_pass_structure
 from cli.parsers.mir import parse_mir_snapshots, vreg_to_physreg
-from cli.parsers.print_changed import parse_changed_ir
+from cli.parsers.print_changed import parse_changed_ir, strip_module_noise
 from cli.parsers.time_passes import parse_time_passes
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -81,6 +81,45 @@ def test_parse_changed_ir_module_dump_keeps_body_but_drops_noise():
     assert "Running" not in snapshots[0].ir
     assert "Invalidating" not in snapshots[0].ir
     assert "@b" in snapshots[0].ir
+
+
+def test_parse_changed_ir_strips_module_bookkeeping():
+    # A module dump's preamble and metadata block are not code: they are
+    # dropped so the diff shows instruction changes, not slot renumbering.
+    stderr = (
+        "*** IR Dump After GlobalOptPass on [module] ***\n"
+        "; ModuleID = 'sample.ll'\n"
+        'source_filename = "sample.c"\n'
+        'target datalayout = "e-m:e"\n'
+        'target triple = "x86_64-pc-linux-gnu"\n'
+        "\n"
+        "define i32 @a() !dbg !49 {\n"
+        "  ret i32 1, !dbg !180\n"
+        "}\n"
+        "\n"
+        "attributes #0 = { nounwind }\n"
+        "\n"
+        "!llvm.dbg.cu = !{!12}\n"
+        "!llvm.module.flags = !{!41}\n"
+        "!llvm.ident = !{!48}\n"
+        "!148 = !DISubrange(count: 64)\n"
+        "!180 = !DILocation(line: 77, column: 5, scope: !104)\n"
+    )
+    ir = parse_changed_ir(stderr)[0].ir
+    assert "ModuleID" not in ir and "target triple" not in ir
+    assert "!llvm.dbg.cu" not in ir and "!DISubrange" not in ir and "!DILocation" not in ir
+    # Code, attributes and an instruction's own !dbg reference all survive.
+    assert "ret i32 1, !dbg !180" in ir
+    assert "define i32 @a() !dbg !49 {" in ir
+    assert "attributes #0 = { nounwind }" in ir
+    assert ir.startswith("define") and ir.endswith("attributes #0 = { nounwind }")
+
+
+def test_strip_module_noise_collapses_the_gaps_it_leaves():
+    assert strip_module_noise(["!0 = !{}", "", "", "a", "", "", "b", "", "!1 = !{}", ""]) == "a\n\nb"
+    # Nothing to strip: a function dump passes through untouched.
+    body = ["define i32 @a() {", "  ret i32 1, !dbg !2", "}"]
+    assert strip_module_noise(body) == "\n".join(body)
 
 
 # --- debug_pass_manager ------------------------------------------------------
