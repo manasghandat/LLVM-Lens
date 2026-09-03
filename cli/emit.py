@@ -65,6 +65,10 @@ class ReportPass:
     # line] or None. Built by cli/sourcemap.py; empty without debug info. The
     # before side needs no map of its own -- it is the previous pass's after.
     src_maps: dict[str, list[Any]] = field(default_factory=dict)
+    # Pass-manager scope (ir lane only): "module" | "cgscc" | "function" |
+    # "loop", inferred from the -debug-pass-manager "on <target>" field. Null for
+    # the mir lane, which gets its hierarchy from -debug-pass=Structure instead.
+    scope: str | None = None
 
 
 def _pass_json(pass_: ReportPass) -> dict[str, Any]:
@@ -125,6 +129,7 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
                 "invalidated": len(p.analyses.get("invalidated", [])),
             },
             "functions": sorted(p.functions),
+            "scope": p.scope,
         }
         for p in passes
     ]

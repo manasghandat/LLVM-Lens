@@ -425,6 +425,59 @@ table.grid td { border: 1px solid var(--line); padding: 3px 8px; font-size: 12px
 
 .hidden { display: none; }
 
+/* --- structure tree --------------------------------------------------------- */
+
+.ptree-wrap { display: flex; flex-direction: column; gap: 14px; padding: 12px;
+  overflow: auto; flex: 1; min-height: 0; }
+
+.ptree-lane { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+.ptree-lane-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); padding: 2px 0; }
+
+.ptree { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.ptree-group { display: flex; flex-direction: column; }
+
+.ptree-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  cursor: pointer; border-left: 2px solid transparent; border-radius: 2px;
+  user-select: none; }
+.ptree-head:hover { background: var(--panel2); }
+.ptree-head .ptree-caret { flex: none; width: 12px; color: var(--faint);
+  font-size: 9px; text-align: center; transition: transform 0.12s ease; }
+.ptree-head .ptree-caret::before { content: "▾"; }
+.ptree-group.collapsed > .ptree-head .ptree-caret::before { content: "▸"; }
+.ptree-gname { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--dim); flex: 1; }
+.ptree-gcount { font-size: 9px; color: var(--faint);
+  font-variant-numeric: tabular-nums; }
+
+.ptree-children { display: flex; flex-direction: column; gap: 1px; }
+.ptree-group.collapsed > .ptree-children { display: none; }
+
+.ptree-leaf { display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  cursor: pointer; border-left: 2px solid transparent; border-radius: 2px; }
+.ptree-leaf:hover { background: var(--panel2); }
+.ptree-leaf.sel { background: var(--panel2); border-left-color: var(--trace); }
+.ptree-leaf.custom { color: var(--custom); }
+.ptree-leaf.dim { opacity: 0.55; }
+
+.ptree-idx { color: var(--faint); font-size: 10px; min-width: 30px;
+  font-variant-numeric: tabular-nums; }
+.ptree-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; flex: 1; }
+.ptree-badges { display: flex; align-items: center; gap: 4px; flex: none; }
+.ptree-badges .badge { color: var(--custom); background: var(--custom-bg);
+  border: 1px solid var(--custom); font-size: 8px; letter-spacing: 0.1em;
+  text-transform: uppercase; padding: 0 3px; border-radius: 2px; flex: none; }
+.ptree-badges .dot { width: 6px; height: 6px; border-radius: 50%;
+  background: var(--trace); flex: none; }
+.ptree-badges .warn { color: var(--warn); font-size: 10px; flex: none; }
+.ptree-stat { color: var(--faint); font-size: 10px; flex: none;
+  font-variant-numeric: tabular-nums; }
+.ptree-time { color: var(--faint); font-size: 10px; flex: none;
+  font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+
 /* --- motion & response ------------------------------------------------------ */
 
 @media (prefers-reduced-motion: no-preference) {

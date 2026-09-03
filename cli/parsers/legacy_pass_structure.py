@@ -52,3 +52,58 @@ def parse_pass_structure(stderr: str) -> tuple[list[PassNode], str | None]:
         if stripped and not stripped.startswith("==="):
             nodes.append(PassNode(stripped, depth, line_no))
     return nodes, pass_arguments
+
+
+def _is_manager(name: str) -> bool:
+    """A structure node is a pass manager iff its name contains "Manager".
+
+    LLVM names every pass manager "<...>Pass Manager" or "<...>Analysis Manager"
+    (e.g. ModulePass Manager, FunctionPass Manager, Loop Pass Manager); no real
+    pass or analysis has "Manager" in its name, so this is a robust classifier.
+    """
+    return "Manager" in name
+
+
+def build_tree(
+    nodes: list[PassNode],
+    passes_by_name: dict[str, int],
+) -> dict[str, object]:
+    """Collapse the flat, execution-ordered structure trace into a compact tree.
+
+    ``parse_pass_structure`` returns an *expanded* trace: every pass invocation is
+    its own entry, so ``Print Function IR`` appears once per printed pass and the
+    same analysis recurs many times. A pass's depth encodes which manager it runs
+    under (ModulePass Manager > FunctionPass Manager > Loop Pass Manager > leaf),
+    so a depth-stack walk recovers the manager skeleton. Leaves are **deduped by
+    name** (first occurrence wins) to collapse the trace into the pipeline's
+    actual structure.
+
+    Machine-pass leaves are linked to their ``ReportPass`` (by id) via
+    *passes_by_name*; analysis, print, and IR-level passes become structural nodes
+    with ``passId`` null.
+    """
+    root: dict[str, object] = {
+        "name": "__root__", "kind": "root", "depth": -1,
+        "passId": None, "children": [],
+    }
+    stack: list[tuple[int, dict[str, object]]] = [(-1, root)]
+    seen: set[str] = set()  # leaf names already emitted (dedup)
+    for node in nodes:
+        while stack[-1][0] >= node.depth:
+            stack.pop()
+        parent = stack[-1][1]
+        manager = _is_manager(node.name)
+        if not manager and node.name in seen:
+            continue  # skip duplicate leaf invocation
+        seen.add(node.name)
+        child: dict[str, object] = {
+            "name": node.name,
+            "kind": "manager" if manager else "pass",
+            "depth": node.depth,
+            "passId": passes_by_name.get(node.name),
+            "children": [],
+        }
+        parent["children"].append(child)  # type: ignore[union-attr]
+        if manager:
+            stack.append((node.depth, child))
+    return root

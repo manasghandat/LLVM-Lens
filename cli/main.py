@@ -31,7 +31,7 @@ from .compile import compile_to_ir
 from .diff import FnChange
 from .emit import ReportPass, emit_report
 from .parsers.debug_pass_manager import parse_pass_runs
-from .parsers.legacy_pass_structure import parse_pass_structure
+from .parsers.legacy_pass_structure import PassNode, build_tree, parse_pass_structure
 from .parsers.mir import parse_mir_snapshots, vreg_to_physreg
 from .parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
@@ -201,14 +201,21 @@ def build_lane_a(
     custom_passes: tuple[str, ...] = (),
     ir_tables: list[tuple[str, str, DebugTable]] | None = None,
     input_ir: str | None = None,
-) -> list[ReportPass]:
+) -> tuple[list[ReportPass], dict[str, str]]:
     """Assemble Lane A (opt) passes from the captured stderr.
 
     *input_ir* is the module as it entered the pipeline (already stripped).
     It seeds the "previous state" of the module and of every function in it,
     so the first pass to touch something diffs against what it actually
     received instead of against nothing.
+
+    Returns ``(passes, scope_by_name)``: the built cards and a map of each pass
+    name to its pass-manager scope (``module``/``cgscc``/``function``/``loop``),
+    inferred from the ``-debug-pass-manager`` ``on <target>`` field. The
+    hierarchical tree is built later in ``build_report`` once ids are assigned.
     """
+    from .parsers.debug_pass_manager import scope_of
+
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
     time_blocks = parse_time_passes(stderr)
@@ -216,10 +223,14 @@ def build_lane_a(
 
     order: list[str] = []
     first_run_lines: list[int] = []  # aligned with `order`
+    # Pass name -> pass-manager scope. The first run's scope wins (a pass that
+    # runs at multiple scopes collapses to one card in this lane).
+    scope_by_name: dict[str, str] = {}
     for run in runs:
         if run.name not in order:
             order.append(run.name)
             first_run_lines.append(run.line)
+            scope_by_name[run.name] = scope_of(run.function)
 
     snap: dict[tuple[str, str], str] = {}
     snap_src: dict[tuple[str, str], LineMap] = {}
@@ -312,8 +323,9 @@ def build_lane_a(
             time_ms=summary_ms.get(name, anchor_ms.get(run_index - 1)),
             is_custom=_is_custom(name, custom_passes),
             src_maps=src_maps,
+            scope=scope_by_name.get(name),
         ))
-    return passes
+    return passes, scope_by_name
 
 
 def build_input_pass(
@@ -360,12 +372,56 @@ def build_input_pass(
     )
 
 
+def _node(name: str, kind: str, *, depth: int = 0) -> dict[str, object]:
+    return {"name": name, "kind": kind, "depth": depth, "passId": None, "children": []}
+
+
+def _build_ir_tree(
+    passes: list[ReportPass],
+    scope_by_name: dict[str, str],
+) -> dict[str, object]:
+    """Build the opt (new-PM) pass-manager tree from each pass's inferred scope.
+
+    The new pass manager has no nested structure dump, so the tree is synthesized
+    from each pass's scope: module, CGSCC, function and loop passes each group
+    under their own collapsible section. The synthetic input card is skipped.
+    Loop passes form a flat section (the scope string carries no reliable parent
+    function across LLVM versions), not a per-function nesting.
+    """
+    root = _node("__root__", "root")
+    sections = {
+        "module": _node("Module", "group", depth=1),
+        "cgscc": _node("CGSCC", "group", depth=1),
+        "function": _node("Function", "group", depth=1),
+        "loop": _node("Loop", "group", depth=1),
+    }
+    have = {k: False for k in sections}
+
+    for pass_ in passes:
+        if pass_.is_input:
+            continue
+        scope = scope_by_name.get(pass_.name, "function")
+        if scope not in sections:
+            scope = "function"
+        have[scope] = True
+        leaf: dict[str, object] = {
+            "name": pass_.name, "kind": "pass",
+            "depth": 2, "passId": pass_.id, "children": [],
+        }
+        sections[scope]["children"].append(leaf)  # type: ignore[union-attr]
+
+    for key in ("module", "cgscc", "function", "loop"):
+        if have[key]:
+            root["children"].append(sections[key])  # type: ignore[union-attr]
+    return root
+
+
 def build_lane_b(
     stderr: str,
     asm_text: str | None = None,
     custom_passes: tuple[str, ...] = (),
     mir_table: DebugTable | None = None,
-) -> list[ReportPass]:
+) -> tuple[list[ReportPass], list[PassNode], str | None]:
     """Assemble Lane B (llc) passes from the captured stderr.
 
     llc's machine pass manager runs function-at-a-time: each ``# *** IR Dump
@@ -373,9 +429,14 @@ def build_lane_b(
     machine code, and the whole sequence repeats per function. Snapshots are
     therefore regrouped by pass id (first-seen order = pipeline order), with
     each card aggregating the per-function snapshots of that pass.
+
+    Returns ``(passes, structure_nodes, pass_arguments)``: the built cards, the
+    raw ``-debug-pass=Structure`` node list (for the hierarchical tree view), and
+    the pass-arguments string. The tree itself is built later in
+    ``build_report`` once the pass ids have been assigned.
     """
     snapshots = parse_mir_snapshots(stderr)
-    parse_pass_structure(stderr)  # validated by tests; ordering comes from dumps
+    nodes, pass_arguments = parse_pass_structure(stderr)
     time_blocks = parse_time_passes(stderr)
 
     # Group snapshots by pass id, preserving first-seen (pipeline) order.
@@ -451,7 +512,7 @@ def build_lane_b(
     _attach_reg_maps(passes, order, by_id, fn_seq)
     if passes and asm_text:
         passes[-1].asm = asm_text
-    return passes
+    return passes, nodes, pass_arguments
 
 
 def _attach_reg_maps(
@@ -575,13 +636,20 @@ def build_report(
     # rather than on the first pass's output. It survives an opt failure.
     input_card = build_input_pass(input_ir, compiled.ir_path, mapped=mapped)
     lane_a = [input_card]
+
+    # Raw structure data for the hierarchical pipeline tree view. Assigned for
+    # real below when a lane runs; these defaults cover a timeout/crash/skip.
+    ir_scopes: dict[str, str] = {}
+    mir_nodes: list[PassNode] = []
+    pass_arguments: str | None = None
     if not opt_result.timed_out:
         # Seed from the card's own text, so what the first pass diffs against
         # is byte-for-byte what the input card displays.
-        lane_a += build_lane_a(
+        lane_a_passes, ir_scopes = build_lane_a(
             opt_stderr, custom_passes, ir_tables,
             input_ir=input_card.functions[MODULE_FN].after,
         )
+        lane_a += lane_a_passes
 
     lane_b: list[ReportPass] = []
     llc_result = None
@@ -608,12 +676,24 @@ def build_report(
                 opt_result.ir_path, toolchain=toolchain, mtriple=mtriple,
                 load=load, timeout=timeout,
             ) if mapped else None
-            lane_b += build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
+            lane_b_passes, mir_nodes, pass_arguments = build_lane_b(
+                llc_stderr, asm_text, custom_passes, mir_table,
+            )
+            lane_b += lane_b_passes
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
     for index, pass_ in enumerate(all_passes, start=1):
         pass_.id = index
+
+    # Build the hierarchical pass-manager trees now that every pass has an id.
+    # Machine-pass leaves link to their ReportPass by name; analyses, print
+    # passes and IR-level passes become structural nodes with null pass id.
+    mir_by_name = {p.name: p.id for p in lane_b}
+    pipeline_tree = {
+        "ir": _build_ir_tree(lane_a, ir_scopes),
+        "mir": build_tree(mir_nodes, mir_by_name),
+    }
 
     source_files = _attach_source_maps(all_passes)
 
@@ -643,6 +723,8 @@ def build_report(
         "llcCrashed": bool(llc_result and llc_result.failed),
         "finalCfg": final_cfg,
         "sourceFiles": source_files,
+        "pipelineTree": pipeline_tree,
+        "passArguments": pass_arguments,
         "errors": {},
     }
     if opt_result.failed:

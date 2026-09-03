@@ -318,6 +318,7 @@ let STATE = {
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
+  lastMode: "diff",          // last non-structure detail mode — restored when drilling in
 };
 let CURRENT_MANIFEST = null;   // manifest.json
 let CURRENT_PASS = null;       // loaded chunk for STATE.passId
@@ -332,6 +333,9 @@ function currentPassSummary() { return passSummaries().find(p => p.id === STATE.
 // "function" is a whole module, so a CFG of it is meaningless. Only IR and
 // Source are offered there.
 const INPUT_MODES = ["ir", "src"];
+// Views that are always available regardless of the selected pass — the structure view
+// overview is meaningful even on the input cards, so it is never hidden.
+const GLOBAL_MODES = ["structure"];
 
 // True on either lane's input card (lane A's "Input IR", lane B's "Optimized
 // IR"): both hold a whole LLVM IR module handed to that lane, not a pass.
@@ -341,6 +345,7 @@ function isInputCard() {
 }
 
 function modeAvailable(mode) {
+  if (GLOBAL_MODES.includes(mode)) return true;
   return !isInputCard() || INPUT_MODES.includes(mode);
 }
 
@@ -451,6 +456,12 @@ function renderFnList() {
 /* --- main view: context line, panes ---------------------------------------- */
 
 function renderCtx() {
+  if (STATE.mode === "structure") {
+    const n = passSummaries().length;
+    document.getElementById("ctx").innerHTML =
+      `pipeline · <span class="fn">${n}</span> passes`;
+    return;
+  }
   const s = currentPassSummary();
   document.getElementById("ctx").innerHTML = s
     ? `${escapeHtml(s.name)} · <span class="fn">#${String(s.runIndex).padStart(3, "0")}</span>`
@@ -648,6 +659,124 @@ function srcPaneHtml() {
   return pane("SOURCE", chips, stat, body);
 }
 
+// --- Structure tree: the pass-manager hierarchy at a glance ---------------------
+
+// A leaf row for a machine/ir pass, reusing the pass list's signal language.
+// Looks the pass's summary up by id so it can show timing, badges and the
+// analysis count without duplicating that data in the tree.
+function pipelineLeafHtml(summary) {
+  if (!summary) return "";
+  const a = summary.analysisCounts || {};
+  const idx = String(summary.runIndex).padStart(3, "0");
+  const cls = [];
+  if (summary.id === STATE.passId) cls.push("sel");
+  if (summary.isCustom) cls.push("custom");
+  else if (!summary.changed) cls.push("dim");
+  return `
+    <div class="ptree-leaf ${cls.join(" ")}" data-id="${summary.id}">
+      <span class="ptree-idx">#${idx}</span>
+      <span class="ptree-name">${escapeHtml(summary.name)}</span>
+      <span class="ptree-badges">
+        ${summary.isCustom ? '<span class="badge" title="custom pass (--custom-pass)">custom</span>' : ""}
+        ${summary.changed ? '<span class="dot" title="changed IR"></span>' : ""}
+        ${summary.spillCount ? `<span class="warn" title="${summary.spillCount} spills">⚠${summary.spillCount}</span>` : ""}
+      </span>
+      <span class="ptree-stat" title="analyses run / invalidated">+${a.run || 0} −${a.invalidated || 0}</span>
+      <span class="ptree-time">${summary.timeMs != null ? summary.timeMs.toFixed(2) + " ms" : ""}</span>
+    </div>`;
+}
+
+// Recursively render a tree node. Manager/group nodes are collapsible headers;
+// pass leaves render as selectable rows. Returns { html, leafCount } so a group
+// can show how many real passes it contains.
+function pipelineNodeHtml(node, summariesById, onlyChanged, depth) {
+  const children = node.children || [];
+  if (!children.length) {
+    // Leaf.
+    const summary = node.passId != null ? summariesById.get(node.passId) : null;
+    if (node.kind !== "pass" || node.passId == null || !summary) {
+      return { html: "", leaves: 0 };
+    }
+    if (onlyChanged && !summary.changed && !summary.isCustom) {
+      return { html: "", leaves: 0 };
+    }
+    return { html: pipelineLeafHtml(summary), leaves: 1 };
+  }
+
+  // Container: recurse into children first so we know the leaf count, then
+  // decide whether the whole group is filtered out.
+  const parts = [];
+  let leaves = 0;
+  for (const child of children) {
+    const r = pipelineNodeHtml(child, summariesById, onlyChanged, depth + 1);
+    if (r.html) parts.push(r.html);
+    leaves += r.leaves;
+  }
+  if (!parts.length) return { html: "", leaves: 0 };
+
+  const caret = `<span class="ptree-caret"></span>`;
+  const count = leaves === 1 ? "1 pass" : `${leaves} passes`;
+  const inner = parts.join("");
+  const html = `
+    <div class="ptree-group" data-depth="${depth}">
+      <div class="ptree-head" style="padding-left:${depth * 14}px">
+        ${caret}<span class="ptree-gname">${escapeHtml(node.name)}</span>
+        <span class="ptree-gcount">${count}</span>
+      </div>
+      <div class="ptree-children">${inner}</div>
+    </div>`;
+  return { html, leaves };
+}
+
+function pipelineTreeHtml() {
+  const manifest = CURRENT_MANIFEST || { metadata: {}, passes: [] };
+  const tree = manifest.metadata.pipelineTree;
+  const summariesById = new Map(manifest.passes.map(p => [p.id, p]));
+  const totalPasses = manifest.passes.length;
+  if (!tree || (!tree.ir && !tree.mir)) {
+    return pane("STRUCTURE", "", "",
+      '<div class="cfg-empty">(no no structure captured)</div>');
+  }
+
+  const onlyChanged = document.getElementById("changedOnly").checked;
+  const lanes = [
+    { key: "ir", label: "IR" },
+    { key: "mir", label: "machine" },
+  ];
+  let body = "";
+  let shown = 0;
+  for (const { key, label } of lanes) {
+    const root = tree[key];
+    if (!root) continue;
+    const { html, leaves } = pipelineNodeHtml(root, summariesById, onlyChanged, 0);
+    if (!html) continue;
+    shown += leaves;
+    body += `
+      <div class="ptree-lane">
+        <div class="ptree-lane-label">${label}</div>
+        <div class="ptree">${html}</div>
+      </div>`;
+  }
+
+  if (!body) {
+    return pane("STRUCTURE", "", "",
+      '<div class="cfg-empty">(no passes match the current filter)</div>');
+  }
+  const stat = `${totalPasses} passes · ${shown} shown`;
+  return pane("STRUCTURE", "", stat, `<div class="ptree-wrap">${body}</div>`);
+}
+
+// Drill from a tree leaf into its pass: switch to the pass's lane, restore the
+// last detail view, and select it (loads the chunk and renders the detail pane).
+function selectPassFromOverview(id) {
+  const p = passSummaries().find(x => x.id === id);
+  if (!p) return;
+  STATE.lane = p.lane;
+  STATE.mode = STATE.lastMode;
+  renderLaneTabs();
+  selectPass(id);
+}
+
 // Highlight one source line on both sides at once. Done by class toggle rather
 // than a re-render so neither pane loses its scroll position.
 function applySrcHighlight(scrollTo) {
@@ -672,10 +801,11 @@ function renderMain() {
   const split = document.getElementById("split");
   const mode = effectiveMode();
   split.innerHTML =
-    mode === "cfg" ? cfgPaneHtml()
-      : mode === "diff" ? diffPaneHtml()
-        : mode === "src" ? srcPaneHtml()
-          : irPaneHtml();
+    mode === "structure" ? pipelineTreeHtml()
+      : mode === "cfg" ? cfgPaneHtml()
+        : mode === "diff" ? diffPaneHtml()
+          : mode === "src" ? srcPaneHtml()
+            : irPaneHtml();
   if (mode === "src") applySrcHighlight("cmapside");
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
@@ -1001,6 +1131,9 @@ document.querySelectorAll("#passPanel .ptab").forEach(b =>
 document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");
   if (!b || !modeAvailable(b.dataset.mode)) return;
+  // Remember the last detail-oriented mode so clicking a structure leaf can
+  // restore it; the overview itself is not a "last mode" we would restore.
+  if (b.dataset.mode !== "structure") STATE.lastMode = b.dataset.mode;
   STATE.mode = b.dataset.mode;
   renderMain();
 });
@@ -1022,6 +1155,19 @@ document.getElementById("split").addEventListener("click", evt => {
   if (ctx) { STATE.diffContext = ctx.dataset.ctx; renderMain(); return; }
   const file = evt.target.closest(".ptab[data-srcfile]");
   if (file) { STATE.srcFile = file.dataset.srcfile; renderMain(); return; }
+
+  // Structure tree: a group header toggles collapse; a leaf drills into its pass.
+  const head = evt.target.closest(".ptree-head");
+  if (head && STATE.mode === "structure") {
+    const group = head.closest(".ptree-group");
+    group.classList.toggle("collapsed");
+    return;
+  }
+  const leaf = evt.target.closest(".ptree-leaf[data-id]");
+  if (leaf && STATE.mode === "structure") {
+    selectPassFromOverview(+leaf.dataset.id);
+    return;
+  }
 
   // Source view: clicking either side selects that source line on both.
   // Clicking the row that is already selected clears the correlation.
@@ -1085,7 +1231,12 @@ document.getElementById("railExpand").addEventListener("click", () => {
   });
 }
 
-document.getElementById("changedOnly").addEventListener("change", renderPassList);
+document.getElementById("changedOnly").addEventListener("change", () => {
+  renderPassList();
+  // The structure view shares the same "only changed" filter as the pass
+  // list, so re-render it too when it is the active view.
+  if (STATE.mode === "structure") renderMain();
+});
 document.getElementById("fnFilter").addEventListener("input", renderFnList);
 
 window.addEventListener("DOMContentLoaded", boot);
