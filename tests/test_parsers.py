@@ -7,7 +7,9 @@ from pathlib import Path
 from cli.parsers.debug_pass_manager import parse_pass_runs
 from cli.parsers.legacy_pass_structure import parse_pass_structure
 from cli.parsers.mir import parse_mir_snapshots, vreg_to_physreg
-from cli.parsers.print_changed import parse_changed_ir, strip_module_noise
+from cli.parsers.print_changed import (
+    parse_changed_ir, split_module_functions, strip_module_noise,
+)
 from cli.parsers.time_passes import parse_time_passes
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -120,6 +122,53 @@ def test_strip_module_noise_collapses_the_gaps_it_leaves():
     # Nothing to strip: a function dump passes through untouched.
     body = ["define i32 @a() {", "  ret i32 1, !dbg !2", "}"]
     assert strip_module_noise(body) == "\n".join(body)
+
+
+def test_split_module_functions_yields_function_dump_bodies():
+    module = (
+        "%struct.s = type { i64 }\n"
+        "@g = global i32 0\n"
+        "\n"
+        "; Function Attrs: noinline nounwind\n"
+        "define dso_local i64 @getTime(ptr noundef %0) #0 !dbg !49 {\n"
+        "  ret i64 0\n"
+        "}\n"
+        "\n"
+        'define internal void @"odd name"() {\n'
+        "  ret void\n"
+        "}\n"
+        "\n"
+        "declare i32 @printf(ptr noundef, ...) #2\n"
+        "attributes #0 = { nounwind }\n"
+    )
+    functions = split_module_functions(module)
+    # Definitions only: globals, types, declarations and attributes are not
+    # things a function dump ever shows.
+    assert set(functions) == {"getTime", "odd name"}
+    # The "; Function Attrs:" line is part of a function dump, so it is kept
+    # here too -- otherwise pairing would report it as an added line.
+    assert functions["getTime"] == (
+        "; Function Attrs: noinline nounwind\n"
+        "define dso_local i64 @getTime(ptr noundef %0) #0 !dbg !49 {\n"
+        "  ret i64 0\n"
+        "}"
+    )
+    assert functions["odd name"].endswith("  ret void\n}")
+
+
+def test_split_module_functions_round_trips_a_function_dump():
+    # Splitting a single function's dump returns that same dump, so the lane
+    # builder can apply it uniformly without special-casing the scope.
+    dump = parse_changed_ir(
+        "*** IR Dump After SROAPass on f ***\n"
+        "; Function Attrs: nounwind\n"
+        "define i32 @f() {\n"
+        "  ret i32 0\n"
+        "}\n"
+    )[0].ir
+    assert split_module_functions(dump) == {"f": dump}
+    # A loop-scope dump has no define, so it contributes nothing.
+    assert split_module_functions("  %1 = add i32 %a, 1\n  br label %2") == {}
 
 
 # --- debug_pass_manager ------------------------------------------------------

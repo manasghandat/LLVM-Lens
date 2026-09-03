@@ -188,6 +188,62 @@ console.log("frontend diff checks passed");
 """
 
 
+# Harness for the view-mode gating: which of the four view chips a given pass
+# can show. The input card (build_input_pass) has no predecessor and its
+# snapshot is a whole module, so Diff and CFG are withheld there.
+MODE_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const start = src.indexOf("// --- input cards (cli/main.py build_input_pass) ---");
+const end = src.indexOf("function fnNames()");
+if (start < 0 || end < 0) { console.error("mode section not found"); process.exit(2); }
+let SUMMARY = null;
+const STATE = { mode: "diff" };
+const currentPassSummary = () => SUMMARY;
+eval(src.slice(start, end));
+
+const failures = [];
+const check = (name, cond) => { if (!cond) failures.push(name); };
+const MODES = ["cfg", "diff", "ir", "src"];
+
+// A real pass offers everything.
+SUMMARY = { id: 5, name: "SROAPass", isInput: false };
+check("a real pass offers all four views", MODES.every(modeAvailable));
+check("a real pass renders the mode the user picked", effectiveMode() === "diff");
+
+check("a real pass is not an input card", !isInputCard());
+
+// Either lane's input card withholds the two that cannot mean anything for it.
+SUMMARY = { id: 83, lane: "mir", name: "Optimized IR", isInput: true, runIndex: 0 };
+check("the machine lane's card is an input card too", isInputCard());
+check("machine input card withholds diff and cfg",
+      !modeAvailable("diff") && !modeAvailable("cfg"));
+SUMMARY = { id: 1, lane: "ir", name: "Input IR", isInput: true, runIndex: 0 };
+check("the ir lane's card is an input card", isInputCard());
+check("input card withholds diff", !modeAvailable("diff"));
+check("input card withholds cfg", !modeAvailable("cfg"));
+check("input card keeps ir and src", modeAvailable("ir") && modeAvailable("src"));
+check("input card falls back to ir", effectiveMode() === "ir");
+check("the requested mode is not clobbered", STATE.mode === "diff");
+STATE.mode = "src";
+check("a supported mode is kept on the input card", effectiveMode() === "src");
+
+// Stepping back onto a real pass restores what the user had asked for.
+STATE.mode = "diff";
+SUMMARY = { id: 5, name: "SROAPass", isInput: false };
+check("mode restored when leaving the input card", effectiveMode() === "diff");
+
+// Older reports have no isInput field; nothing is withheld.
+SUMMARY = { id: 5, name: "SROAPass" };
+check("a report without isInput offers everything", MODES.every(modeAvailable));
+SUMMARY = null;
+check("no pass selected offers everything", MODES.every(modeAvailable));
+
+if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
+console.log("frontend mode checks passed");
+"""
+
+
 # Harness for the vendored graph stack: load cytoscape + dagre + the
 # cytoscape-dagre UMD registration under node, run a headless dagre layout on
 # a cyclic CFG, and verify ranks plus the back-edge classification used by
@@ -257,6 +313,12 @@ def test_cfg_parse_dot():
 
 def test_diff_renderer():
     result = _run_node(DIFF_HARNESS, str(FRONTEND / "app.js"))
+    assert result.returncode == 0, result.stderr
+    assert "passed" in result.stdout
+
+
+def test_view_mode_gating():
+    result = _run_node(MODE_HARNESS, str(FRONTEND / "app.js"))
     assert result.returncode == 0, result.stderr
     assert "passed" in result.stdout
 

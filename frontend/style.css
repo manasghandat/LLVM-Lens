@@ -210,6 +210,9 @@ body.rail-collapsed .rail-edge { display: none; }
 .splt .chip { border: 0; border-radius: 0; padding: 5px 8px; }
 .splt .chip.on { background: var(--panel2); }
 .splt.inactive { opacity: 0.4; }
+/* A view this pass cannot show is dropped from the row entirely (the input
+   card has no diff and no CFG); [hidden] must beat the flex layout. */
+.splt .chip[hidden] { display: none; }
 .ctx { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .ctx .fn { color: var(--ink); }

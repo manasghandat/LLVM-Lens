@@ -7,7 +7,10 @@ from pathlib import Path
 
 from cli.diff import FnChange
 from cli.emit import ReportPass, emit_report
-from cli.main import _effective_pipeline, build_lane_a, build_lane_b, build_report
+from cli.main import (
+    BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
+    build_input_pass, build_lane_a, build_lane_b, build_report,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FRONTEND = Path(__file__).parent.parent / "frontend"
@@ -124,6 +127,85 @@ def test_build_lane_a_on_fixture():
     assert any(p.dots.get("main") and p.dots["main"][1] for p in passes)  # DOT generated
 
 
+
+def test_build_lane_a_pairs_the_first_dump_against_the_input_module():
+    # Without a seed the first pass to touch something diffs against nothing,
+    # which reads as "the whole function was added" -- false.
+    module = (
+        "; Function Attrs: nounwind\n"
+        "define i32 @main() {\n"
+        "  %1 = add i32 1, 1\n"
+        "  ret i32 %1\n"
+        "}\n"
+    )
+    stderr = (
+        "Running pass: InstCombinePass on main\n"
+        "*** IR Dump After InstCombinePass on main ***\n"
+        "; Function Attrs: nounwind\n"
+        "define i32 @main() {\n"
+        "  ret i32 2\n"
+        "}\n"
+    )
+    unseeded = build_lane_a(stderr)[0].functions["main"]
+    assert unseeded.before == ""
+
+    seeded = build_lane_a(stderr, input_ir=module)[0].functions["main"]
+    assert seeded.before == module.rstrip("\n")  # the function as it arrived
+    assert seeded.changed
+
+
+def test_build_lane_a_carries_module_pass_changes_into_the_function_track():
+    # A module pass dumps the whole module; the functions inside it are the
+    # new state of those functions, so the next function-scope dump must not
+    # be blamed for what the module pass did.
+    stderr = (
+        "Running pass: GlobalOptPass on [module]\n"
+        "*** IR Dump After GlobalOptPass on [module] ***\n"
+        "define i32 @main() {\n"
+        "  %1 = add i32 1, 1\n"
+        "  ret i32 %1\n"
+        "}\n"
+        "Running pass: InstCombinePass on main\n"
+        "*** IR Dump After InstCombinePass on main ***\n"
+        "define i32 @main() {\n"
+        "  ret i32 2\n"
+        "}\n"
+    )
+    passes = build_lane_a(stderr, input_ir="define i32 @main() {\n  ret i32 undef\n}")
+    instcombine = next(p for p in passes if p.name == "InstCombinePass")
+    assert "%1 = add i32 1, 1" in instcombine.functions["main"].before
+    assert "undef" not in instcombine.functions["main"].before
+
+
+def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():
+    # A CGSCC pass names its dump "(main)"; that is the function main, not a
+    # second entity with no history of its own.
+    stderr = (
+        "Running pass: InstCombinePass on main\n"
+        "*** IR Dump After InstCombinePass on main ***\n"
+        "define i32 @main() {\n"
+        "  ret i32 1\n"
+        "}\n"
+        "Running pass: PostOrderFunctionAttrsPass on (main)\n"
+        "*** IR Dump After PostOrderFunctionAttrsPass on (main) ***\n"
+        "define i32 @main() #0 {\n"
+        "  ret i32 1\n"
+        "}\n"
+    )
+    passes = build_lane_a(stderr)
+    attrs = next(p for p in passes if p.name == "PostOrderFunctionAttrsPass")
+    assert set(attrs.functions) == {"main"}  # not "(main)"
+    assert attrs.functions["main"].before == "define i32 @main() {\n  ret i32 1\n}"
+
+    # A real multi-function SCC is its own entity and keeps its own name.
+    multi = build_lane_a(
+        "Running pass: P on (a, b)\n"
+        "*** IR Dump After P on (a, b) ***\n"
+        "define i32 @a() {\n  ret i32 1\n}\n"
+        "define i32 @b() {\n  ret i32 2\n}\n"
+    )
+    assert set(multi[0].functions) == {"(a, b)"}
+
 def test_build_lane_a_marks_custom():
     # --custom-pass matches case-insensitively; only the named pass is flagged.
     passes = build_lane_a(OPT_STDERR, custom_passes=("sroapass",))
@@ -131,6 +213,81 @@ def test_build_lane_a_marks_custom():
     assert sroa.is_custom
     assert all(not p.is_custom for p in passes if p.name != "SROAPass")
 
+
+
+INPUT_MODULE = """; ModuleID = 'sample.ll'
+source_filename = "sample.c"
+target triple = "x86_64-pc-linux-gnu"
+
+define i32 @main() #0 !dbg !9 {
+  br label %1, !dbg !12
+
+1:
+  ret i32 0, !dbg !12
+}
+
+!llvm.dbg.cu = !{!2}
+!0 = !DIFile(filename: "sample.c", directory: "/repo")
+!2 = distinct !DICompileUnit(file: !0)
+!9 = distinct !DISubprogram(name: "main", file: !0, line: 30, unit: !2)
+!12 = !DILocation(line: 33, column: 3, scope: !9)
+"""
+
+
+def test_build_input_pass_leads_the_lane_with_the_unoptimized_module():
+    card = build_input_pass(INPUT_MODULE, Path("report/raw/sample.ll"))
+    assert card.lane == "ir"
+    assert card.name == INPUT_PASS_NAME
+    assert card.run_index == 0  # ahead of the pipeline, which starts at 1
+    assert card.pass_id is None and card.time_ms is None
+    assert card.changed  # it carries IR, so "only changed" keeps it
+    assert card.is_input  # the viewer withholds Diff and CFG for it
+
+    change = card.functions[MODULE_FN]
+    assert change.before == ""  # nothing precedes the input
+    assert "define i32 @main() #0 !dbg !9 {" in change.after
+    # Same stripping as every other card: no preamble, no metadata block.
+    assert "ModuleID" not in change.after and "!DILocation" not in change.after
+    # No CFG: the view is withheld for input cards, so a graph would be dead
+    # weight in every report.
+    assert card.dots == {}
+
+
+
+def test_build_input_pass_serves_the_machine_lane_too():
+    # Lane B's card is the same module after every opt pass -- the text llc
+    # actually reads -- so it lands on the machine lane, not the IR one.
+    card = build_input_pass(
+        INPUT_MODULE, Path("report/raw/opt-final.ll"),
+        lane="mir", name=BACKEND_INPUT_PASS_NAME, note="after every opt pass",
+    )
+    assert card.lane == "mir"
+    assert card.name == BACKEND_INPUT_PASS_NAME
+    assert card.run_index == 0 and card.is_input
+    assert "backend" in card.log and "after every opt pass" in card.log
+    # Still LLVM IR, so it maps through the module's own metadata as usual.
+    assert card.src_maps[MODULE_FN]
+
+def test_build_input_pass_maps_lines_through_the_modules_own_metadata():
+    # The input module is self-describing, so no harvest is needed -- but the
+    # table must be read before stripping removes it.
+    card = build_input_pass(INPUT_MODULE, Path("in.ll"))
+    mapping = card.src_maps[MODULE_FN]
+    lines = card.functions[MODULE_FN].after.split("\n")
+    assert len(mapping) == len(lines)
+    located = {line: ref for line, ref in zip(lines, mapping) if ref}
+    assert located["  ret i32 0, !dbg !12"].line == 33
+    assert located["  ret i32 0, !dbg !12"].file.endswith("sample.c")
+    assert located["define i32 @main() #0 !dbg !9 {"].line == 30
+
+    # --no-source-map (mapped=False) costs nothing and maps nothing.
+    assert build_input_pass(INPUT_MODULE, Path("in.ll"), mapped=False).src_maps == {}
+
+
+def test_build_input_pass_without_debug_info_still_shows_the_module():
+    card = build_input_pass("define i32 @main() {\n  ret i32 0\n}\n", Path("in.ll"))
+    assert card.src_maps == {}
+    assert "ret i32 0" in card.functions[MODULE_FN].after
 
 def test_effective_pipeline_appends_function_passes():
     assert _effective_pipeline("default<O2>", ("mba-add",)) == "default<O2>,function(mba-add)"
@@ -185,3 +342,22 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     assert (tmp_path / "report" / "index.html").is_file()
     assert (tmp_path / "report" / "raw" / "opt-stderr.log").is_file()
     assert (tmp_path / "report" / "data" / "pass-1.json").is_file()
+
+    # Lane A opens on the module as clang emitted it, before any pass ran.
+    first = manifest["passes"][0]
+    assert first["lane"] == "ir" and first["name"] == INPUT_PASS_NAME
+    assert first["runIndex"] == 0
+    assert first["isInput"]
+
+    # ... and so does lane B, on the module opt handed to llc.
+    backend = next(p for p in manifest["passes"] if p["lane"] == "mir")
+    assert backend["name"] == BACKEND_INPUT_PASS_NAME
+    assert backend["runIndex"] == 0 and backend["isInput"]
+    assert [p["name"] for p in manifest["passes"] if p["isInput"]] == \
+        [INPUT_PASS_NAME, BACKEND_INPUT_PASS_NAME]
+    backend_chunk = json.loads(
+        (tmp_path / "report" / "data" / f"pass-{backend['id']}.json").read_text())
+    assert "define" in backend_chunk["functions"][MODULE_FN]["after"]
+    chunk = json.loads((tmp_path / "report" / "data" / f"pass-{first['id']}.json").read_text())
+    assert chunk["functions"][MODULE_FN]["before"] == ""
+    assert "define" in chunk["functions"][MODULE_FN]["after"]

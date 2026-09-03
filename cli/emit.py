@@ -56,6 +56,11 @@ class ReportPass:
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
     asm: str | None = None  # final assembly text, attached to the last mir pass
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
+    # The synthetic pre-pipeline card (cli/main.py build_input_pass). Nothing
+    # precedes it, so there is nothing to diff against, and its "function" is
+    # a whole module, so a control-flow graph of it is meaningless -- the
+    # viewer offers only the IR and Source views for it.
+    is_input: bool = False
     # fn -> source map of the *after* snapshot: per line, [file index, source
     # line] or None. Built by cli/sourcemap.py; empty without debug info. The
     # before side needs no map of its own -- it is the previous pass's after.
@@ -112,6 +117,7 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "timeMs": p.time_ms,
             "changed": p.changed,
             "isCustom": p.is_custom,
+            "isInput": p.is_input,
             "spillCount": sum(p.spills.values()) if p.spills else None,
             "analysisCounts": {
                 "run": len(p.analyses.get("run", [])),

@@ -324,6 +324,33 @@ let CURRENT_PASS = null;       // loaded chunk for STATE.passId
 
 function passSummaries() { return (CURRENT_MANIFEST || { passes: [] }).passes; }
 function currentPassSummary() { return passSummaries().find(p => p.id === STATE.passId); }
+
+// --- input cards (cli/main.py build_input_pass) ---
+// Each lane opens on the LLVM IR module it was handed: clang's output for the
+// IR lane, the post-opt module llc reads for the machine lane. Nothing in the
+// lane precedes them, so there is nothing to diff against, and their one
+// "function" is a whole module, so a CFG of it is meaningless. Only IR and
+// Source are offered there.
+const INPUT_MODES = ["ir", "src"];
+
+// True on either lane's input card (lane A's "Input IR", lane B's "Optimized
+// IR"): both hold a whole LLVM IR module handed to that lane, not a pass.
+function isInputCard() {
+  const summary = currentPassSummary();
+  return !!(summary && summary.isInput);
+}
+
+function modeAvailable(mode) {
+  return !isInputCard() || INPUT_MODES.includes(mode);
+}
+
+// STATE.mode is what the user asked for and is left alone; this is what the
+// current pass can actually show. Stepping onto the input card falls back to
+// IR, and stepping off it restores the mode they had chosen.
+function effectiveMode() {
+  return modeAvailable(STATE.mode) ? STATE.mode : "ir";
+}
+
 function fnNames() {
   const s = currentPassSummary();
   return (s && s.functions) || [];
@@ -434,8 +461,14 @@ function renderCtx() {
 
 function updateViewHead() {
   const set = (el, on) => { el.classList.toggle("on", on); el.classList.toggle("off", !on); };
-  document.querySelectorAll("#modeCtl .chip").forEach(b =>
-    set(b, b.dataset.mode === STATE.mode));
+  const mode = effectiveMode();
+  // A view this pass cannot show is removed from the row, not dimmed: there
+  // is nothing there to reason about.
+  document.querySelectorAll("#modeCtl .chip").forEach(b => {
+    const ok = modeAvailable(b.dataset.mode);
+    set(b, ok && b.dataset.mode === mode);
+    b.hidden = !ok;
+  });
   // Orientation only applies where the view actually rendered a pair (the IR
   // and Source views, and CFG showing both graphs) -- ask the DOM rather than
   // re-deriving it per mode, which also covers panes that fell back to an
@@ -607,7 +640,8 @@ function srcPaneHtml() {
     </div>`;
   const body = `
     <div class="irpair${STATE.orientation === "stack" ? " stacked" : ""}">
-      ${side(CURRENT_PASS && CURRENT_PASS.lane === "mir" ? "machine ir" : "llvm ir", irRows, "irmap")}
+      ${side(CURRENT_PASS && CURRENT_PASS.lane === "mir" && !isInputCard()
+              ? "machine ir" : "llvm ir", irRows, "irmap")}
       <div class="divider" title="drag to resize"></div>
       ${side(files[index].name, srcRows, "cmapside")}
     </div>`;
@@ -636,12 +670,13 @@ function renderMain() {
   renderCtx();
   destroyCfgGraphs();
   const split = document.getElementById("split");
+  const mode = effectiveMode();
   split.innerHTML =
-    STATE.mode === "cfg" ? cfgPaneHtml()
-      : STATE.mode === "diff" ? diffPaneHtml()
-        : STATE.mode === "src" ? srcPaneHtml()
+    mode === "cfg" ? cfgPaneHtml()
+      : mode === "diff" ? diffPaneHtml()
+        : mode === "src" ? srcPaneHtml()
           : irPaneHtml();
-  if (STATE.mode === "src") applySrcHighlight("cmapside");
+  if (mode === "src") applySrcHighlight("cmapside");
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
@@ -651,6 +686,9 @@ function renderMain() {
 /* --- bottom panel ---------------------------------------------------------- */
 
 function bottomTabs() {
+  // An input card ran no analyses and allocated no registers; only its Log,
+  // which says where the module came from, has anything to show.
+  if (isInputCard()) return ["Log"];
   const tabs = ["Log", "Analyses"];
   if (CURRENT_PASS && CURRENT_PASS.lane === "mir") tabs.push("RegMap");
   if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push("Asm");
@@ -962,7 +1000,7 @@ document.querySelectorAll("#passPanel .ptab").forEach(b =>
 
 document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");
-  if (!b) return;
+  if (!b || !modeAvailable(b.dataset.mode)) return;
   STATE.mode = b.dataset.mode;
   renderMain();
 });

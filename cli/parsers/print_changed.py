@@ -38,6 +38,10 @@ MODULE_NOISE_RE = re.compile(
     r"^(?:; ModuleID = |source_filename = |target (?:datalayout|triple) = |!)"
 )
 
+# "define dso_local i64 @getTime(ptr noundef %0) #0 !dbg !49 {" -- the name is
+# the first `@thing(` on the line; quoted names ("foo bar") are legal too.
+DEFINE_RE = re.compile(r'^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$\-]+)\s*\(')
+
 
 @dataclass(frozen=True)
 class IrSnapshot:
@@ -109,3 +113,34 @@ def strip_module_noise(lines: list[str]) -> str:
     while kept and not kept[-1].strip():
         kept.pop()
     return "\n".join(kept)
+
+
+def split_module_functions(module_text: str) -> dict[str, str]:
+    """Split a module dump into {function name: its text}.
+
+    The bodies come out byte-identical to what a function-scope dump of the
+    same state prints -- same printer, same slot numbering -- so they can be
+    used as the "before" of a later function dump. The ``; Function Attrs:``
+    comment above a define is part of the function dump, so it is kept here
+    too, or the pairing would show it as an added line.
+
+    Only definitions are returned; declarations, globals and the rest of the
+    module are not something a function dump ever shows.
+    """
+    lines = module_text.splitlines()
+    functions: dict[str, str] = {}
+    index = 0
+    while index < len(lines):
+        match = DEFINE_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+        start = index
+        while start > 0 and lines[start - 1].startswith(";"):
+            start -= 1
+        end = index
+        while end < len(lines) and lines[end] != "}":
+            end += 1
+        functions[match.group(1).strip('"')] = "\n".join(lines[start : end + 1])
+        index = end + 1
+    return functions

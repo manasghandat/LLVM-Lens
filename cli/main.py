@@ -6,6 +6,8 @@ Pipeline (Lane A = opt middle-end, Lane B = llc backend):
       -> compile_to_ir (clang -S -emit-llvm -O0, no optnone)
       -> run_opt  -passes=...  (-print-changed=quiet, -debug-pass-manager,
                                 -time-passes)            -> Lane A passes
+                                (led by build_input_pass: the module before
+                                 any pass ran, at run_index 0)
       -> run_llc  (-print-after-all, -debug-pass=Structure, -time-passes)
                                                          -> Lane B passes
       -> emit_report (manifest.json + pass-<id>.json + frontend copy)
@@ -31,13 +33,15 @@ from .emit import ReportPass, emit_report
 from .parsers.debug_pass_manager import parse_pass_runs
 from .parsers.legacy_pass_structure import parse_pass_structure
 from .parsers.mir import parse_mir_snapshots, vreg_to_physreg
-from .parsers.print_changed import parse_changed_ir
+from .parsers.print_changed import (
+    parse_changed_ir, split_module_functions, strip_module_noise,
+)
 from .parsers.time_passes import parse_time_passes
 from .runner_llc import run_llc
 from .runner_opt import run_opt
 from .sourcemap import (
     MIR_REF_RE, DebugTable, LineMap, encode, harvest_ir_tables, harvest_mir_table,
-    has_debug_info, map_lines, read_sources,
+    has_debug_info, map_lines, parse_debug_table, read_sources,
 )
 from .toolchain import Toolchain, discover_toolchain
 
@@ -45,6 +49,20 @@ IR_DUMP_HEADER_RE = re.compile(r"^\*\*\* IR Dump After ")
 MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After ")
 
 DEFAULT_PASSES = "default<O2>"
+
+# opt names a whole-module dump "[module]"; the input card uses the same key
+# so the function list reads the same there as on any module pass.
+MODULE_FN = "[module]"
+# Each lane opens on a synthetic card holding the LLVM IR it was handed:
+# lane A gets clang's output, lane B gets that same module after the whole opt
+# pipeline has run on it. Neither is a pass.
+INPUT_PASS_NAME = "Input IR"
+BACKEND_INPUT_PASS_NAME = "Optimized IR"
+# A CGSCC pass names its dump after the SCC -- "(main)" -- not the function.
+# A single-function SCC *is* that function, so its dumps join the function's
+# own track rather than starting a second one under a parenthesized alias.
+# A real multi-function SCC ("(a, b)") stays its own entity.
+SCC_FN_RE = re.compile(r"^\(([^(),]+)\)$")
 
 # Passes opt adds for its own driver duties (input verification, and the
 # module printer behind -S). clang's pipeline never runs them, so they are
@@ -172,12 +190,25 @@ def _join_ir_tables(
     return [table for _, _, table in tables]
 
 
+def _canonical_fn(name: str) -> str:
+    """The entity a dump belongs to, as the report tracks it."""
+    match = SCC_FN_RE.match(name)
+    return match.group(1) if match else name
+
+
 def build_lane_a(
     stderr: str,
     custom_passes: tuple[str, ...] = (),
     ir_tables: list[tuple[str, str, DebugTable]] | None = None,
+    input_ir: str | None = None,
 ) -> list[ReportPass]:
-    """Assemble Lane A (opt) passes from the captured stderr."""
+    """Assemble Lane A (opt) passes from the captured stderr.
+
+    *input_ir* is the module as it entered the pipeline (already stripped).
+    It seeds the "previous state" of the module and of every function in it,
+    so the first pass to touch something diffs against what it actually
+    received instead of against nothing.
+    """
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
     time_blocks = parse_time_passes(stderr)
@@ -194,11 +225,11 @@ def build_lane_a(
     snap_src: dict[tuple[str, str], LineMap] = {}
     fn_order: dict[str, int] = {}
     for dump, table in zip(dumps, joined):
-        key = (dump.pass_name, dump.function)
+        key = (dump.pass_name, _canonical_fn(dump.function))
         if key not in snap and table is not None:
             snap_src[key] = map_lines(dump.ir, table)
         snap.setdefault(key, dump.ir)
-        fn_order.setdefault(dump.function, len(fn_order))
+        fn_order.setdefault(key[1], len(fn_order))
 
     analyses: dict[str, dict[str, list[str]]] = {}
     for run in runs:
@@ -212,8 +243,18 @@ def build_lane_a(
     anchor_ms = _attribute_time_ms(time_blocks, first_run_lines)
 
     passes: list[ReportPass] = []
+    # Last known text of each dumped entity, keyed the way opt names it:
+    # "[module]" for a module dump, the bare name for a function dump. Loop
+    # and CGSCC dumps ("loop %x in function f", "(f)") are their own keys and
+    # have no earlier state to pair with, so they keep an empty "before".
     prev_text: dict[str, str] = {}
     prev_dots: dict[str, str | None] = {}
+    if input_ir is not None:
+        prev_text[MODULE_FN] = input_ir
+        prev_dots[MODULE_FN] = ir_cfg_dot(input_ir, MODULE_FN)
+        for fn, text in split_module_functions(input_ir).items():
+            prev_text[fn] = text
+            prev_dots[fn] = ir_cfg_dot(text, fn)
     line_count = len(stderr.splitlines()) + 1
     for run_index, name in enumerate(order, start=1):
         fn_changes: dict[str, FnChange] = {}
@@ -226,8 +267,17 @@ def build_lane_a(
             after_src = snap_src.get((name, fn))
             if after_src is not None:
                 src_maps[fn] = after_src
+        # A dump carries the new state of every function inside it, not just
+        # of the entity it is named after: a module pass dumps the whole
+        # module, an SCC pass its members. Without this, a function's "before"
+        # would skip whatever those passes did to it and blame the next
+        # function-scope pass for their changes. On a plain function dump the
+        # split returns that same function, so this is simply its own update.
+        bodies: dict[str, str] = {}
         for fn, change in fn_changes.items():
             prev_text[fn] = change.after
+            bodies.update(split_module_functions(change.after))
+        prev_text.update(bodies)
         # Keep cards for passes with no dumps too: -print-changed=quiet only
         # emits IR for what changed, but a pass card with an empty diff still
         # documents that the pass ran (mirrors clang's pass-structure view).
@@ -245,6 +295,8 @@ def build_lane_a(
             )
         for fn, change in fn_changes.items():
             prev_dots[fn] = dots[fn][1]
+        for fn, text in bodies.items():
+            prev_dots[fn] = ir_cfg_dot(text, fn)
 
         passes.append(ReportPass(
             id=0,  # assigned by build_report
@@ -262,6 +314,50 @@ def build_lane_a(
             src_maps=src_maps,
         ))
     return passes
+
+
+def build_input_pass(
+    ir_text: str,
+    origin: Path,
+    *,
+    lane: str = "ir",
+    name: str = INPUT_PASS_NAME,
+    note: str = "before any pass ran",
+    mapped: bool = True,
+) -> ReportPass:
+    """The card holding the LLVM IR a lane was handed.
+
+    Lane A gets clang's module; lane B gets that module after the whole opt
+    pipeline, which is literally the text llc reads. Neither is a pass, but
+    both wear the same shape so the IR and Source views work on them
+    unchanged, and both sort at run_index 0, ahead of a pipeline that starts
+    at 1. "before" is empty because nothing in that lane precedes them, which
+    is also why the viewer withholds the Diff and CFG views (`is_input`) --
+    there is nothing to diff against, and the snapshot is a whole module
+    rather than one function.
+
+    Unlike a -print-changed dump these modules are self-describing, so their
+    own metadata resolves the source mapping with no harvest. The table has
+    to be read *before* stripping, which is what removes it.
+    """
+    table = parse_debug_table(ir_text) if mapped and has_debug_info(ir_text) else None
+    text = strip_module_noise(ir_text.splitlines())
+    return ReportPass(
+        id=0,  # assigned by build_report
+        lane=lane,
+        name=name,
+        pass_id=None,
+        run_index=0,
+        time_ms=None,
+        changed=True,
+        functions={MODULE_FN: FnChange(MODULE_FN, "", text)},
+        dots={},  # no CFG: the view is withheld, so a graph would be dead weight
+        analyses={"run": [], "cached": [], "invalidated": []},
+        log=f"Module as it entered the {'backend' if lane == 'mir' else 'pipeline'}, "
+            f"{note} ({origin}).",
+        src_maps={MODULE_FN: map_lines(text, table)} if table else {},
+        is_input=True,
+    )
 
 
 def build_lane_b(
@@ -467,18 +563,36 @@ def build_report(
     # Source correlation needs each dump's own metadata table, which the
     # function-scope capture does not carry -- harvest it separately. Skipped
     # outright when the module has no debug info, so -g-less inputs pay nothing.
-    mapped = source_map and has_debug_info(compiled.ir_path.read_text(errors="replace"))
+    input_ir = compiled.ir_path.read_text(errors="replace")
+    mapped = source_map and has_debug_info(input_ir)
     ir_tables = harvest_ir_tables(
         compiled.ir_path, effective_passes, toolchain=toolchain, mtriple=mtriple,
         load_pass_plugins=load_pass_plugins, print_after=custom_passes,
         timeout=timeout,
     ) if mapped else None
 
-    lane_a = build_lane_a(opt_stderr, custom_passes, ir_tables) if not opt_result.timed_out else []
+    # The input module leads lane A, so the report opens on what clang emitted
+    # rather than on the first pass's output. It survives an opt failure.
+    input_card = build_input_pass(input_ir, compiled.ir_path, mapped=mapped)
+    lane_a = [input_card]
+    if not opt_result.timed_out:
+        # Seed from the card's own text, so what the first pass diffs against
+        # is byte-for-byte what the input card displays.
+        lane_a += build_lane_a(
+            opt_stderr, custom_passes, ir_tables,
+            input_ir=input_card.functions[MODULE_FN].after,
+        )
 
     lane_b: list[ReportPass] = []
     llc_result = None
     if opt_result.ir_path is not None:
+        # Lane B opens on what llc actually reads: the module after every opt
+        # pass. Added before llc runs, so it survives a backend crash too.
+        lane_b.append(build_input_pass(
+            opt_result.ir_path.read_text(errors="replace"), opt_result.ir_path,
+            lane="mir", name=BACKEND_INPUT_PASS_NAME,
+            note="after every opt pass", mapped=mapped,
+        ))
         llc_result = run_llc(
             opt_result.ir_path, out_dir=raw, mtriple=mtriple,
             load_pass_plugins=load_pass_plugins, load=load,
@@ -494,7 +608,7 @@ def build_report(
                 opt_result.ir_path, toolchain=toolchain, mtriple=mtriple,
                 load=load, timeout=timeout,
             ) if mapped else None
-            lane_b = build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
+            lane_b += build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
