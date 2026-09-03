@@ -346,6 +346,28 @@ body.rail-collapsed .rail-edge { display: none; }
 /* the .irside frame is the chrome; the scroller inside it is bare */
 .irside .udiff { border: 0; border-radius: 0; min-height: 0; }
 
+/* --- Source view: IR beside the C it came from ---------------------------- */
+/* Both sides are .irside frames of .urow rows, so the gutters, sticky
+ * behaviour and scrolling all come from the rules above. What is added here:
+ * a second gutter carrying the mapped source line, and the correlation
+ * highlight that clicking either side turns on. */
+
+.sln { color: var(--trace); opacity: 0.75; }
+.urow.smap { cursor: pointer; }
+.crow { cursor: default; }
+/* a source line some IR line maps to — the rest of the file stays quiet */
+.crow.cmap { cursor: pointer; }
+.crow:not(.cmap) .utext { opacity: 0.45; }
+.urow.smap:hover, .crow.cmap:hover { background: var(--panel); }
+
+/* the correlation itself: same accent on both sides, so the eye pairs them */
+.urow.hit { background: rgba(121, 201, 220, 0.16); }
+.urow.hit .uln { background: linear-gradient(rgba(121, 201, 220, 0.16),
+  rgba(121, 201, 220, 0.16)) var(--panel2); }
+.urow.hit .utext { opacity: 1; }
+.irside.irmap .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+.cmapside .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
 
 .tok-kw   { color: #7fa8e0; }                       /* opcodes, linkage, attrs */

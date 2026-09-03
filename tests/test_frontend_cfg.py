@@ -1,10 +1,11 @@
-"""Frontend CFG rendering checks.
+"""Frontend rendering checks that need no browser.
 
 Runs the browser-free parts of frontend/app.js under node: DOT parsing
 (parseDot), the diff builder and its two renderers (diffOps / diffHunks /
-unifiedDiffHtml for the Diff view, irSideHtml for the IR view), and — using
-the vendored UMD builds — a headless cytoscape
-+ dagre layout of a CFG with a loop. Skipped when node is not installed.
+unifiedDiffHtml for the Diff view, irSideHtml for the IR view), the C
+tokenizer behind the Source view, and — using the vendored UMD builds — a
+headless cytoscape + dagre layout of a CFG with a loop. Skipped when node is
+not installed.
 """
 
 from __future__ import annotations
@@ -170,6 +171,17 @@ check("ir: vars", hl.includes('<span class="tok-var">%r</span>') && hl.includes(
 check("ir: number", hl.includes('<span class="tok-num">1</span>'));
 check("ir: comment", hl.includes('<span class="tok-com">; comment</span>'));
 check("ir: escape safety", highlightIR('"a<b>" ; x').includes('&lt;'));
+
+// C tokenizer: the Source view renders the original file beside the IR.
+const c = highlightC('  for (int i = 0; i < 0x40; i++) // loop');
+check("c: keyword", c.includes('<span class="tok-kw">for</span>'));
+check("c: type", c.includes('<span class="tok-type">int</span>'));
+check("c: hex number", c.includes('<span class="tok-num">0x40</span>'));
+check("c: comment", c.includes('<span class="tok-com">// loop</span>'));
+check("c: call name", highlightC('printf("hi");').includes('<span class="tok-fn">printf</span>'));
+check("c: a keyword inside a string stays plain",
+      highlightC('char *s = "for while";').includes('<span class="tok-str">"for while"</span>'));
+check("c: escape safety", highlightC('a < b && c > d').includes('&lt;'));
 
 if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
 console.log("frontend diff checks passed");

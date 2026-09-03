@@ -264,6 +264,43 @@ function highlightIR(text) {
   }).join("\n");
 }
 
+/* --- c source highlighting ------------------------------------------------ */
+
+// Deliberately shallow: enough structure to read a C file next to the IR,
+// reusing the same .tok-* palette. Comments and strings win over keywords,
+// so a keyword inside a string stays plain.
+const C_TOKEN_RES = [
+  { cls: "tok-com", re: /\/\/[^\n]*|\/\*[\s\S]*?\*\// },
+  { cls: "tok-md", re: /^[ \t]*#\s*\w+/ },                       // preprocessor
+  { cls: "tok-str", re: /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/ },
+  { cls: "tok-type", re: /\b(?:void|char|short|int|long|float|double|signed|unsigned|_Bool|size_t|ssize_t|ptrdiff_t|u?int(?:8|16|32|64)_t|FILE|struct|union|enum)\b/ },
+  { cls: "tok-kw", re: /\b(?:auto|break|case|const|continue|default|do|else|extern|for|goto|if|inline|register|restrict|return|sizeof|static|switch|typedef|volatile|while)\b/ },
+  { cls: "tok-lit", re: /\b(?:NULL|true|false)\b/ },
+  { cls: "tok-num", re: /\b(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?)\b/ },
+  { cls: "tok-fn", re: /\b[A-Za-z_]\w*(?=\s*\()/ },
+].map(d => ({ cls: d.cls, re: new RegExp(d.re.source, "g") }));
+
+function highlightC(line) {
+  const spans = [];
+  for (const { cls, re } of C_TOKEN_RES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(line))) {
+      if (!m[0]) { re.lastIndex++; continue; }
+      spans.push({ s: m.index, e: m.index + m[0].length, cls });
+    }
+  }
+  spans.sort((a, b) => a.s - b.s);
+  let out = "", pos = 0;
+  for (const sp of spans) {
+    if (sp.s < pos) continue;
+    out += escapeHtml(line.slice(pos, sp.s));
+    out += `<span class="${sp.cls}">${escapeHtml(line.slice(sp.s, sp.e))}</span>`;
+    pos = sp.e;
+  }
+  return out + escapeHtml(line.slice(pos));
+}
+
 /* --- views ---------------------------------------------------------------- */
 
 // Workspace state. One screen, no routes: lane tabs and the function list
@@ -276,6 +313,8 @@ let STATE = {
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
   diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
+  srcFile: null,             // Source view: path of the file shown
+  srcLine: null,             // Source view: correlated source line, or null
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
@@ -291,6 +330,9 @@ function fnNames() {
 }
 function fnChange(fn) {
   return CURRENT_PASS && CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
+}
+function sourceFiles() {
+  return ((CURRENT_MANIFEST || {}).metadata || {}).sourceFiles || [];
 }
 
 /* --- rail: pass list ------------------------------------------------------ */
@@ -394,10 +436,11 @@ function updateViewHead() {
   const set = (el, on) => { el.classList.toggle("on", on); el.classList.toggle("off", !on); };
   document.querySelectorAll("#modeCtl .chip").forEach(b =>
     set(b, b.dataset.mode === STATE.mode));
-  // Orientation only applies where a view shows a pair: the IR view's
-  // before/after snapshots, and the CFG view with both graphs.
-  const paired = STATE.mode === "ir"
-    || (STATE.mode === "cfg" && STATE.cfgSource === "both");
+  // Orientation only applies where the view actually rendered a pair (the IR
+  // and Source views, and CFG showing both graphs) -- ask the DOM rather than
+  // re-deriving it per mode, which also covers panes that fell back to an
+  // empty state.
+  const paired = !!document.querySelector("#split .irpair, #split .cfg-pair");
   document.getElementById("splitCtl").classList.toggle("inactive", !paired);
   set(document.getElementById("splitSide"), STATE.orientation === "side");
   set(document.getElementById("splitStack"), STATE.orientation === "stack");
@@ -498,6 +541,97 @@ function irPaneHtml() {
   return pane("IR", "", stat, body);
 }
 
+// --- Source view: this stage's IR beside the C it came from -----------------
+
+// Debug info maps each IR/MIR line to one source line (cli/sourcemap.py
+// resolves the !dbg metadata at build time). The two panes are keyed on that
+// line number: clicking either side highlights every counterpart of it.
+
+// Which file this snapshot mostly came from — inlining can pull in several.
+function srcFileTally(map) {
+  const tally = new Map();
+  for (const ref of map) {
+    if (ref) tally.set(ref[0], (tally.get(ref[0]) || 0) + 1);
+  }
+  return [...tally.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+function srcPaneHtml() {
+  const empty = (note) => pane("SOURCE", "", "", `<div class="cfg-empty">${note}</div>`);
+  const files = sourceFiles();
+  if (!files.length) {
+    return empty("(no source correlation in this report — it needs a source built "
+      + "with debug info, and is skipped by --no-source-map)");
+  }
+  const ch = fnChange(STATE.fn);
+  if (!ch) return empty("(select a function)");
+  const map = ch.srcAfter || [];
+  const lines = splitLines(ch.after);
+  const tally = srcFileTally(map);
+  if (!tally.length) {
+    return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass)`);
+  }
+  let index = files.findIndex(f => f.path === STATE.srcFile);
+  if (index < 0 || !tally.some(([i]) => i === index)) index = tally[0][0];
+  STATE.srcFile = files[index].path;
+
+  const irRows = lines.map((text, i) => {
+    const ref = map[i];
+    const on = ref && ref[0] === index;
+    return `<div class="urow ${on ? "smap" : "uctx"}"${on ? ` data-ln="${ref[1]}"` : ""}>`
+      + `<span class="uln">${i + 1}</span>`
+      + `<span class="uln sln">${on ? ref[1] : ""}</span>`
+      + `<code class="utext">${highlightIR(text) || "&nbsp;"}</code>`
+      + "</div>";
+  }).join("");
+
+  const covered = new Set(map.filter(r => r && r[0] === index).map(r => r[1]));
+  const srcRows = splitLines(files[index].text).map((text, i) => {
+    const line = i + 1;
+    return `<div class="urow crow${covered.has(line) ? " cmap" : ""}" data-ln="${line}">`
+      + `<span class="uln">${line}</span>`
+      + `<code class="utext">${highlightC(text) || "&nbsp;"}</code>`
+      + "</div>";
+  }).join("");
+
+  // Only worth a file switcher when this snapshot really spans several files.
+  const chips = tally.length > 1 ? tally.map(([i, n]) =>
+    `<button class="ptab ${i === index ? "active" : ""}" data-srcfile="${escapeHtml(files[i].path)}"
+      title="${n} mapped lines">${escapeHtml(files[i].name)}</button>`).join("") : "";
+  const mapped = map.filter(r => r && r[0] === index).length;
+  const stat = `${mapped}/${lines.length} lines mapped · ${escapeHtml(files[index].name)}`;
+  const side = (label, body, cls) => `
+    <div class="irside ${cls}">
+      <div class="irside-head"><span>${label}</span></div>
+      <div class="udiff"><div class="ubody">${body}</div></div>
+    </div>`;
+  const body = `
+    <div class="irpair${STATE.orientation === "stack" ? " stacked" : ""}">
+      ${side(CURRENT_PASS && CURRENT_PASS.lane === "mir" ? "machine ir" : "llvm ir", irRows, "irmap")}
+      <div class="divider" title="drag to resize"></div>
+      ${side(files[index].name, srcRows, "cmapside")}
+    </div>`;
+  return pane("SOURCE", chips, stat, body);
+}
+
+// Highlight one source line on both sides at once. Done by class toggle rather
+// than a re-render so neither pane loses its scroll position.
+function applySrcHighlight(scrollTo) {
+  const line = STATE.srcLine == null ? null : String(STATE.srcLine);
+  document.querySelectorAll("#split .urow[data-ln]").forEach(row =>
+    row.classList.toggle("hit", line !== null && row.dataset.ln === line));
+  if (!scrollTo) return;
+  const target = document.querySelector(`#split .${scrollTo} .urow.hit`);
+  if (target) scrollRowIntoView(target);
+}
+
+function scrollRowIntoView(row) {
+  const scroller = row.closest(".udiff");
+  if (!scroller) return;
+  const top = row.offsetTop - scroller.clientHeight / 2 + row.offsetHeight / 2;
+  scroller.scrollTop = Math.max(0, top);
+}
+
 function renderMain() {
   renderCtx();
   destroyCfgGraphs();
@@ -505,11 +639,13 @@ function renderMain() {
   split.innerHTML =
     STATE.mode === "cfg" ? cfgPaneHtml()
       : STATE.mode === "diff" ? diffPaneHtml()
-        : irPaneHtml();
+        : STATE.mode === "src" ? srcPaneHtml()
+          : irPaneHtml();
+  if (STATE.mode === "src") applySrcHighlight("cmapside");
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
-  updateViewHead();  // after the panes: cfgPaneHtml may correct cfgSource
+  updateViewHead();  // after the panes: it reads what they rendered
 }
 
 /* --- bottom panel ---------------------------------------------------------- */
@@ -840,12 +976,23 @@ document.getElementById("splitStack").addEventListener("click", () => {
 });
 
 // Pane chips live inside the rebuilt panes: CFG source (before / after /
-// both) and diff context (hunks / full).
+// both), diff context (hunks / full) and the Source view's file switcher.
 document.getElementById("split").addEventListener("click", evt => {
   const src = evt.target.closest(".ptab[data-src]");
   if (src) { STATE.cfgSource = src.dataset.src; renderMain(); return; }
   const ctx = evt.target.closest(".ptab[data-ctx]");
-  if (ctx) { STATE.diffContext = ctx.dataset.ctx; renderMain(); }
+  if (ctx) { STATE.diffContext = ctx.dataset.ctx; renderMain(); return; }
+  const file = evt.target.closest(".ptab[data-srcfile]");
+  if (file) { STATE.srcFile = file.dataset.srcfile; renderMain(); return; }
+
+  // Source view: clicking either side selects that source line on both.
+  // Clicking the row that is already selected clears the correlation.
+  const row = evt.target.closest("#split .urow[data-ln]");
+  if (!row || STATE.mode !== "src") return;
+  const line = +row.dataset.ln;
+  STATE.srcLine = STATE.srcLine === line ? null : line;
+  // Scroll the *other* pane: the side you clicked is already where you want it.
+  applySrcHighlight(row.closest(".cmapside") ? "irmap" : "cmapside");
 });
 
 // Bottom panel collapse + tab switching.

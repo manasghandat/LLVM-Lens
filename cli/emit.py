@@ -56,6 +56,10 @@ class ReportPass:
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
     asm: str | None = None  # final assembly text, attached to the last mir pass
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
+    # fn -> source map of the *after* snapshot: per line, [file index, source
+    # line] or None. Built by cli/sourcemap.py; empty without debug info. The
+    # before side needs no map of its own -- it is the previous pass's after.
+    src_maps: dict[str, list[Any]] = field(default_factory=dict)
 
 
 def _pass_json(pass_: ReportPass) -> dict[str, Any]:
@@ -71,6 +75,11 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
             functions[fn]["dotBefore"] = dot_before
         if dot_after:
             functions[fn]["dotAfter"] = dot_after
+        # Omit all-None maps: a snapshot with no resolvable location would
+        # otherwise cost a full-length array of nulls per pass.
+        src_after = pass_.src_maps.get(fn)
+        if src_after and any(src_after):
+            functions[fn]["srcAfter"] = src_after
 
     entry: dict[str, Any] = {
         "id": pass_.id,

@@ -35,6 +35,10 @@ from .parsers.print_changed import parse_changed_ir
 from .parsers.time_passes import parse_time_passes
 from .runner_llc import run_llc
 from .runner_opt import run_opt
+from .sourcemap import (
+    MIR_REF_RE, DebugTable, LineMap, encode, harvest_ir_tables, harvest_mir_table,
+    has_debug_info, map_lines, read_sources,
+)
 from .toolchain import Toolchain, discover_toolchain
 
 IR_DUMP_HEADER_RE = re.compile(r"^\*\*\* IR Dump After ")
@@ -150,11 +154,34 @@ def _attribute_time_ms(
     return totals
 
 
-def build_lane_a(stderr: str, custom_passes: tuple[str, ...] = ()) -> list[ReportPass]:
+def _join_ir_tables(
+    dumps: list[Any],
+    tables: list[tuple[str, str, DebugTable]] | None,
+) -> list[DebugTable | None]:
+    """Line up the module-scope harvest with the main run's dumps.
+
+    Both runs execute the same pipeline, so dump *k* is the same (pass,
+    function) in both. Any divergence means the harvest is not describing this
+    run, and the whole mapping is dropped rather than shifted by one.
+    """
+    if not tables or len(tables) != len(dumps):
+        return [None] * len(dumps)
+    if any((name, function) != (d.pass_name, d.function)
+           for (name, function, _), d in zip(tables, dumps)):
+        return [None] * len(dumps)
+    return [table for _, _, table in tables]
+
+
+def build_lane_a(
+    stderr: str,
+    custom_passes: tuple[str, ...] = (),
+    ir_tables: list[tuple[str, str, DebugTable]] | None = None,
+) -> list[ReportPass]:
     """Assemble Lane A (opt) passes from the captured stderr."""
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
     time_blocks = parse_time_passes(stderr)
+    joined = _join_ir_tables(dumps, ir_tables)
 
     order: list[str] = []
     first_run_lines: list[int] = []  # aligned with `order`
@@ -164,9 +191,13 @@ def build_lane_a(stderr: str, custom_passes: tuple[str, ...] = ()) -> list[Repor
             first_run_lines.append(run.line)
 
     snap: dict[tuple[str, str], str] = {}
+    snap_src: dict[tuple[str, str], LineMap] = {}
     fn_order: dict[str, int] = {}
-    for dump in dumps:
-        snap.setdefault((dump.pass_name, dump.function), dump.ir)
+    for dump, table in zip(dumps, joined):
+        key = (dump.pass_name, dump.function)
+        if key not in snap and table is not None:
+            snap_src[key] = map_lines(dump.ir, table)
+        snap.setdefault(key, dump.ir)
         fn_order.setdefault(dump.function, len(fn_order))
 
     analyses: dict[str, dict[str, list[str]]] = {}
@@ -186,11 +217,15 @@ def build_lane_a(stderr: str, custom_passes: tuple[str, ...] = ()) -> list[Repor
     line_count = len(stderr.splitlines()) + 1
     for run_index, name in enumerate(order, start=1):
         fn_changes: dict[str, FnChange] = {}
+        src_maps: dict[str, LineMap] = {}
         for fn in sorted(fn_order, key=fn_order.get):
             after = snap.get((name, fn))
             if after is None:
                 continue
             fn_changes[fn] = FnChange(fn, prev_text.get(fn, ""), after)
+            after_src = snap_src.get((name, fn))
+            if after_src is not None:
+                src_maps[fn] = after_src
         for fn, change in fn_changes.items():
             prev_text[fn] = change.after
         # Keep cards for passes with no dumps too: -print-changed=quiet only
@@ -224,12 +259,16 @@ def build_lane_a(stderr: str, custom_passes: tuple[str, ...] = ()) -> list[Repor
             log=_pass_log(stderr, first_run_line, end_line),
             time_ms=summary_ms.get(name, anchor_ms.get(run_index - 1)),
             is_custom=_is_custom(name, custom_passes),
+            src_maps=src_maps,
         ))
     return passes
 
 
 def build_lane_b(
-    stderr: str, asm_text: str | None = None, custom_passes: tuple[str, ...] = ()
+    stderr: str,
+    asm_text: str | None = None,
+    custom_passes: tuple[str, ...] = (),
+    mir_table: DebugTable | None = None,
 ) -> list[ReportPass]:
     """Assemble Lane B (llc) passes from the captured stderr.
 
@@ -268,6 +307,7 @@ def build_lane_b(
         fn_changes: dict[str, FnChange] = {}
         dots: dict[str, tuple[str | None, str | None]] = {}
         spills: dict[str, int] = {}
+        src_maps: dict[str, LineMap] = {}
         for snapshot in group:
             fn = next(iter(snapshot.functions))
             machine_function = snapshot.functions[fn]
@@ -282,6 +322,8 @@ def build_lane_b(
                 machine_cfg_dot(machine_function),
             )
             spills[fn] = machine_function.spill_count
+            if mir_table:
+                src_maps[fn] = map_lines(machine_function.text, mir_table, MIR_REF_RE)
         for snapshot in group:
             fn = next(iter(snapshot.functions))
             prev_mf[fn] = snapshot.functions[fn]
@@ -307,6 +349,7 @@ def build_lane_b(
             time_ms=summary_ms.get(group[0].pass_name, anchor_ms.get(run_index - 1)),
             is_custom=_is_custom(group[0].pass_name, custom_passes)
                       or _is_custom(pass_id, custom_passes),
+            src_maps=src_maps,
         ))
 
     _attach_reg_maps(passes, order, by_id, fn_seq)
@@ -361,6 +404,30 @@ def _attach_reg_maps(
 # --- pipeline -----------------------------------------------------------------
 
 
+def _attach_source_maps(passes: list[ReportPass]) -> list[dict[str, str]]:
+    """Read every mapped source file and re-encode the maps against its index.
+
+    Returns the report's ``sourceFiles`` list; passes whose files could not be
+    read (a header outside the tree, a moved source) lose their mapping rather
+    than pointing at a file the viewer cannot show.
+    """
+    every: list[LineMap] = [
+        mapping for pass_ in passes for mapping in pass_.src_maps.values()
+    ]
+    if not every:
+        return []
+    texts = read_sources(every)
+    files = sorted(texts)
+    for pass_ in passes:
+        pass_.src_maps = {
+            fn: encode(mapping, files) for fn, mapping in pass_.src_maps.items()
+        }
+    return [
+        {"path": path, "name": Path(path).name, "text": texts[path]}
+        for path in files
+    ]
+
+
 def build_report(
     source: str | Path,
     *,
@@ -372,6 +439,7 @@ def build_report(
     output: str | Path = "report",
     bin_dir: str | Path | None = None,
     timeout: float = 60.0,
+    source_map: bool = True,
 ) -> dict[str, Any]:
     """Run the full pipeline and emit the report. Returns a summary dict."""
     out = Path(output)
@@ -395,7 +463,18 @@ def build_report(
         timeout=timeout, toolchain=toolchain,
     )
     opt_stderr = opt_result.stderr_path.read_text(errors="replace")
-    lane_a = build_lane_a(opt_stderr, custom_passes) if not opt_result.timed_out else []
+
+    # Source correlation needs each dump's own metadata table, which the
+    # function-scope capture does not carry -- harvest it separately. Skipped
+    # outright when the module has no debug info, so -g-less inputs pay nothing.
+    mapped = source_map and has_debug_info(compiled.ir_path.read_text(errors="replace"))
+    ir_tables = harvest_ir_tables(
+        compiled.ir_path, effective_passes, toolchain=toolchain, mtriple=mtriple,
+        load_pass_plugins=load_pass_plugins, print_after=custom_passes,
+        timeout=timeout,
+    ) if mapped else None
+
+    lane_a = build_lane_a(opt_stderr, custom_passes, ir_tables) if not opt_result.timed_out else []
 
     lane_b: list[ReportPass] = []
     llc_result = None
@@ -409,12 +488,20 @@ def build_report(
         if not llc_result.timed_out:
             llc_stderr = llc_result.stderr_path.read_text(errors="replace")
             asm_text = llc_result.asm_path.read_text(errors="replace") if llc_result.asm_path else None
-            lane_b = build_lane_b(llc_stderr, asm_text, custom_passes)
+            # llc numbers metadata once for the module it reads and never
+            # renumbers, so a single harvested table covers every machine pass.
+            mir_table = harvest_mir_table(
+                opt_result.ir_path, toolchain=toolchain, mtriple=mtriple,
+                load=load, timeout=timeout,
+            ) if mapped else None
+            lane_b = build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
     for index, pass_ in enumerate(all_passes, start=1):
         pass_.id = index
+
+    source_files = _attach_source_maps(all_passes)
 
     # Final state of each function's CFG after the whole pipeline (last card
     # per lane that produced a graph) — shown as the "final CFG" in the UI.
@@ -441,6 +528,7 @@ def build_report(
         "optCrashed": opt_result.failed,
         "llcCrashed": bool(llc_result and llc_result.failed),
         "finalCfg": final_cfg,
+        "sourceFiles": source_files,
         "errors": {},
     }
     if opt_result.failed:
@@ -482,6 +570,9 @@ def build_report(
               help="Directory holding the LLVM tools (else LLVM_LENS_BIN_DIR / PATH).")
 @click.option("--timeout", type=float, default=60.0, show_default=True,
               help="Per-tool invocation timeout in seconds.")
+@click.option("--source-map/--no-source-map", default=True, show_default=True,
+              help="Correlate IR/MIR lines with the original source (needs debug "
+                   "info; costs one extra opt and llc run).")
 def main(
     source: str,
     passes: str,
@@ -492,6 +583,7 @@ def main(
     output: str,
     bin_dir: str | None,
     timeout: float,
+    source_map: bool,
 ) -> None:
     """Analyze LLVM pass pipelines and emit a static HTML report.
 
@@ -510,6 +602,7 @@ def main(
             output=output,
             bin_dir=bin_dir,
             timeout=timeout,
+            source_map=source_map,
         )
     except (click.ClickException,):
         raise
