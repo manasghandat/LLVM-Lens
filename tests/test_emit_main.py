@@ -231,6 +231,65 @@ def test_build_lane_a_carries_module_pass_changes_into_the_function_track():
     assert "undef" not in instcombine.functions["main"].before
 
 
+def test_build_lane_a_lists_every_function_on_every_pass():
+    # opt only dumps what a pass changed, but the function list is how a CFG is
+    # picked, so every card carries every function in the module: the ones the
+    # pass touched marked changed, the rest carrying their current state so
+    # their CFG is still there to look at (the viewer dims them).
+    module = (
+        "define i32 @a() {\n  ret i32 1\n}\n"
+        "\n"
+        "define i32 @b() {\n  ret i32 2\n}\n"
+    )
+    stderr = (
+        "Running pass: NoOpPass on a\n"
+        "Running pass: InstCombinePass on b\n"
+        "*** IR Dump After InstCombinePass on b ***\n"
+        "define i32 @b() {\n  ret i32 3\n}\n"
+    )
+    passes = build_lane_a(stderr, input_ir=module)
+
+    # A pass that dumped nothing at all still lists both functions.
+    noop = next(p for p in passes if p.name == "NoOpPass")
+    assert list(noop.functions) == ["a", "b"]
+    assert not any(c.changed for c in noop.functions.values())
+    assert not noop.changed  # ...so it stays hidden by the "only changed" filter
+    assert noop.functions["a"].before == noop.functions["a"].after
+    assert noop.dots["a"] == (noop.dots["a"][0], noop.dots["a"][0])  # one CFG, both sides
+
+    # A pass that changed one function marks that one and only that one.
+    instcombine = next(p for p in passes if p.name == "InstCombinePass")
+    assert list(instcombine.functions) == ["a", "b"]
+    assert not instcombine.functions["a"].changed
+    assert instcombine.functions["b"].changed
+    assert instcombine.changed
+    # The filled row carries the function as it stands now, not an empty before.
+    assert "ret i32 1" in instcombine.functions["a"].after
+
+
+def test_build_lane_a_fill_follows_a_module_pass_deleting_a_function():
+    # A module dump says what the module holds; a function it dropped must not
+    # keep appearing on later cards from its last known text.
+    module = (
+        "define i32 @a() {\n  ret i32 1\n}\n"
+        "\n"
+        "define i32 @b() {\n  ret i32 2\n}\n"
+    )
+    stderr = (
+        "Running pass: GlobalDCEPass on [module]\n"
+        "*** IR Dump After GlobalDCEPass on [module] ***\n"
+        "define i32 @b() {\n  ret i32 2\n}\n"
+        "Running pass: InstCombinePass on b\n"
+        "*** IR Dump After InstCombinePass on b ***\n"
+        "define i32 @b() {\n  ret i32 3\n}\n"
+    )
+    passes = build_lane_a(stderr, input_ir=module)
+    dce = next(p for p in passes if p.name == "GlobalDCEPass")
+    assert list(dce.functions) == ["[module]", "b"]  # "a" is gone as of this card
+    later = next(p for p in passes if p.name == "InstCombinePass")
+    assert list(later.functions) == ["b"]
+
+
 def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():
     # A CGSCC pass names its dump "(main)"; that is the function main, not a
     # second entity with no history of its own.
@@ -420,7 +479,8 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     assert set(final_cfg) == {"ir", "mir"}
     for fn, dot in final_cfg["mir"].items():
         assert dot.startswith("digraph")
-        assert '\\n  ' in dot  # block names plus real instructions
+        assert 'name="bb.0"' in dot   # block names, in their own attribute
+        assert ", label=" in dot      # ...and real instructions beside them
     assert (tmp_path / "report" / "index.html").is_file()
     assert (tmp_path / "report" / "raw" / "opt-stderr.log").is_file()
     assert (tmp_path / "report" / "data" / "pass-1.json").is_file()

@@ -798,13 +798,32 @@ function labelBox(label, charW = CFG_FONT.charW) {
   return { w: contentW + 2 * padX, h: visual * lineH + 2 * padY, wrapped: wrapped.join("\n") };
 }
 
+// cli/cfg.py emits each node as: n0 [name="bb.0", label="…", code="…"], with
+// label and code absent on a block with no instructions. Attributes are read
+// by name rather than by position, so their order stays cli/cfg.py's business.
+const DOT_ATTR_RE = /(\w+)="((?:[^"\\]|\\.)*)"/g;
+
 function parseDot(dot) {
   const nodes = [], edges = [];
   for (const line of String(dot || "").split("\n")) {
-    let m = line.match(/^\s*n(\d+) \[label="((?:[^"\\]|\\.)*)"(?:, code="((?:[^"\\]|\\.)*)")?\]\s*;?$/);
+    let m = line.match(/^\s*n(\d+) \[(.*)\]\s*;?$/);
     if (m) {
       const un = (s) => s.replace(/\\n/g, "\n").replace(/\\(.)/g, "$1");
-      nodes.push({ id: +m[1], label: un(m[2]), code: m[3] !== undefined ? un(m[3]) : "" });
+      const attrs = {};
+      for (const a of m[2].matchAll(DOT_ATTR_RE)) attrs[a[1]] = un(a[2]);
+      const label = attrs.label || "";
+      // The block name is not drawn in the graph -- a bare "6" or "bb.1" among
+      // the instructions reads as one of them -- only in the block detail. A
+      // report written before the name attribute existed carries it as the
+      // label's first line; drop that line so those graphs render the same.
+      nodes.push(attrs.name !== undefined
+        ? { id: +m[1], name: attrs.name, label, code: attrs.code || "" }
+        : {
+            id: +m[1],
+            name: label.split("\n")[0],
+            label: label.split("\n").slice(1).join("\n"),
+            code: attrs.code || "",
+          });
       continue;
     }
     m = line.match(/^\s*n(\d+) -> n(\d+);$/);
@@ -864,7 +883,7 @@ function mountCfg(el, dot) {
         id: "n" + nd.id,
         label: box.wrapped,
         code: nd.code,
-        name: nd.label.split("\n")[0],
+        name: nd.name,
         w: box.w,
         h: box.h,
       },

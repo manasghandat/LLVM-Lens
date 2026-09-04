@@ -250,12 +250,17 @@ def build_lane_a(
     # have no earlier state to pair with, so they keep an empty "before".
     prev_text: dict[str, str] = {}
     prev_dots: dict[str, str | None] = {}
+    # Every function the module holds right now, in module order. opt only
+    # dumps what a pass changed, so this is what lets a card also list the
+    # functions the pass left alone (see the fill below).
+    known_fns: list[str] = []
     if input_ir is not None:
         prev_text[MODULE_FN] = input_ir
         prev_dots[MODULE_FN] = ir_cfg_dot(input_ir, MODULE_FN)
         for fn, text in split_module_functions(input_ir).items():
             prev_text[fn] = text
             prev_dots[fn] = ir_cfg_dot(text, fn)
+            known_fns.append(fn)
     line_count = len(stderr.splitlines()) + 1
     for run_index, name in enumerate(order, start=1):
         fn_changes: dict[str, FnChange] = {}
@@ -298,6 +303,38 @@ def build_lane_a(
             prev_dots[fn] = dots[fn][1]
         for fn, text in bodies.items():
             prev_dots[fn] = ir_cfg_dot(text, fn)
+
+        # A module dump is authoritative about what the module holds -- whatever
+        # the pass added or deleted included -- so it refreshes the set before
+        # this card is filled in.
+        if MODULE_FN in fn_changes:
+            known_fns = list(split_module_functions(fn_changes[MODULE_FN].after))
+
+        # Every function gets a row on every card, not just the ones this pass
+        # dumped: the function list is how you pick a CFG to look at, and a
+        # function this pass left alone still has one worth seeing. The filled
+        # rows carry the function as it stands after this pass, with
+        # changed=False -- so the list dims them, and the "only changed" filter
+        # and the per-pass line counts are untouched. Lane B reads this way
+        # already, because llc's -print-after-all dumps every function for
+        # every pass.
+        for fn in known_fns:
+            text = prev_text.get(fn)
+            if fn in fn_changes or not text:
+                continue
+            fn_changes[fn] = FnChange(fn, text, text)
+            dots[fn] = (prev_dots.get(fn), prev_dots.get(fn))
+        # One order for every card, whatever each pass happened to dump: the
+        # module, then its functions in module order, then the loop and SCC
+        # entities, which are named after the function they sit in.
+        ordered = [MODULE_FN] + known_fns + sorted(set(fn_changes) - {MODULE_FN} - set(known_fns))
+        fn_changes = {fn: fn_changes[fn] for fn in ordered if fn in fn_changes}
+
+        # A function, loop or SCC dump only ever reveals functions, and this
+        # card is already about them -- extending after the fill keeps a
+        # multi-function SCC from being listed twice on its own card, once as
+        # the SCC entity and once as its members.
+        known_fns.extend(fn for fn in bodies if fn not in known_fns)
 
         passes.append(ReportPass(
             id=0,  # assigned by build_report

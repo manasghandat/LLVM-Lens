@@ -36,18 +36,28 @@ eval(code);
 const failures = [];
 const check = (name, cond) => { if (!cond) failures.push(name); };
 
-// exact format cli/cfg.py emits: label (name + indented, truncated code) plus
-// a code attribute with the full untruncated block body
-const coded = 'digraph {\n  rankdir="TB";\n  n0 [label="bb.0\\n  %0 = MOV32rm", code="%0 = MOV32rm\\nJCC_1 %bb.1"];\n  n1 [label="bb.1\\n  RET 0"];\n  n0 -> n1;\n}';
+// exact format cli/cfg.py emits: the block name in its own attribute, a
+// truncated code label, and the full untruncated block body in code
+const coded = 'digraph {\n  rankdir="TB";\n  n0 [name="bb.0", label="%0 = MOV32rm", code="%0 = MOV32rm\\nJCC_1 %bb.1"];\n  n1 [name="bb.1"];\n  n0 -> n1;\n}';
 const cl = parseDot(coded);
 check("nodes parsed", cl.nodes.length === 2);
-check("label unescaped to real newlines", cl.nodes[0].label === "bb.0\n  %0 = MOV32rm");
-check("code attribute parsed", cl.nodes[0].code === "%0 = MOV32rm\nJCC_1 %bb.1");
+check("block name read from its own attribute", cl.nodes[0].name === "bb.0");
+check("label is code only, no block name in it", cl.nodes[0].label === "%0 = MOV32rm");
+check("code attribute unescaped to real newlines", cl.nodes[0].code === "%0 = MOV32rm\nJCC_1 %bb.1");
 check("node without code -> empty string", cl.nodes[1].code === "");
+check("block with no instructions has an empty label", cl.nodes[1].label === "");
+check("...but is still named", cl.nodes[1].name === "bb.1");
 check("edges parsed", cl.edges.length === 1 && cl.edges[0][0] === 0 && cl.edges[0][1] === 1);
 
-// indentation + escaped quotes in both attributes
-const quoted = 'digraph {\n  rankdir="TB";\n  n0 [label="a\\"b", code="c\\"d"];\n}';
+// a report written before the name attribute existed carries the block name as
+// the label's first line; it must not end up drawn in the graph either
+const legacy = parseDot('digraph {\n  n0 [label="bb.0\\n  %0 = MOV32rm", code="%0 = MOV32rm"];\n}');
+check("legacy name from the first label line", legacy.nodes[0].name === "bb.0");
+check("legacy label drops the name line", legacy.nodes[0].label === "  %0 = MOV32rm");
+
+// escaped quotes in every attribute
+const quoted = 'digraph {\n  rankdir="TB";\n  n0 [name="n\\"m", label="a\\"b", code="c\\"d"];\n}';
+check("escaped quote in name", parseDot(quoted).nodes[0].name === 'n"m');
 check("escaped quote in label", parseDot(quoted).nodes[0].label === 'a"b');
 check("escaped quote in code", parseDot(quoted).nodes[0].code === 'c"d');
 

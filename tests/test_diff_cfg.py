@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from cli.cfg import ir_cfg_dot, machine_cfg_dot
 from cli.diff import FnChange, pair_snapshots
 from cli.parsers.mir import MachineBlock, MachineFunction
@@ -95,13 +97,13 @@ default:
 def test_ir_cfg_branch():
     dot = ir_cfg_dot(IR_WITH_BRANCH, "f")
     assert dot.startswith("digraph")
-    # Labels carry the block name plus its instructions (escaped as \n);
-    # the code attribute carries the full untruncated block body.
+    # Labels carry instructions only -- the block name is its own attribute,
+    # never a line of the label -- and code carries the untruncated body.
     assert (
-        'n0 [label="entry\\n  %cmp = icmp sgt i32 %x, 0\\n  br i1 %cmp, label %then, label %else", '
+        'n0 [name="entry", label="%cmp = icmp sgt i32 %x, 0\\nbr i1 %cmp, label %then, label %else", '
         'code="%cmp = icmp sgt i32 %x, 0\\nbr i1 %cmp, label %then, label %else"]'
     ) in dot
-    assert 'n1 [label="then\\n  ret i32 1", code="ret i32 1"]' in dot
+    assert 'n1 [name="then", label="ret i32 1", code="ret i32 1"]' in dot
     assert "n0 -> n1" in dot
     assert "n0 -> n2" in dot  # else
     assert "n1 -> n3" not in dot  # ret has no successors
@@ -129,6 +131,49 @@ def test_ir_cfg_stops_at_function_end():
     dot = ir_cfg_dot(ir, "flush_cache")
     assert "Running" not in dot
     assert "ret ptr %.04.lcssa" in dot
+
+
+IR_UNNAMED_ENTRY = """define dso_local ptr @flush_cache(ptr %0, i32 %1) {
+  br label %3
+
+3:                                                ; preds = %4, %2
+  %x = icmp sle i32 0, 255
+  br i1 %x, label %4, label %5
+
+4:                                                ; preds = %3
+  br label %3
+
+5:                                                ; preds = %3
+  ret ptr null
+}
+"""
+
+
+def test_ir_cfg_includes_the_unnamed_entry_block():
+    # LLVM omits the entry block's label when the block is unnamed, so nothing
+    # in the text announces it -- but it is a block, and every other block's
+    # CFG hangs off it.
+    dot = ir_cfg_dot(IR_UNNAMED_ENTRY, "flush_cache")
+    # Two unnamed parameters take slots 0 and 1, so the entry block is %2 --
+    # the name the preds comments use for it.
+    assert 'n0 [name="2", label="br label %3"' in dot
+    assert "n0 -> n1" in dot  # entry -> %3
+    assert "n2 -> n1" in dot  # the back edge still resolves
+
+
+def test_ir_cfg_of_a_function_that_is_one_unnamed_block():
+    # Nothing but the entry block: without it the graph came out empty, which
+    # read as "this function has no CFG".
+    dot = ir_cfg_dot(
+        "; Function Attrs: noinline\n"
+        "define dso_local i64 @getTime(ptr noundef %0) #0 {\n"
+        "  %2 = alloca i64, align 8\n"
+        "  ret i64 0\n"
+        "}\n",
+        "getTime",
+    )
+    assert 'n0 [name="1"' in dot  # one unnamed parameter, so the block is %1
+    assert "%2 = alloca i64, align 8" in dot
 
 
 # --- cfg: machine ----------------------------------------------------------------
@@ -207,9 +252,11 @@ def test_machine_cfg_align16_block_headers():
 
 def test_machine_cfg_dot():
     dot = machine_cfg_dot(_machine_function())
-    # bb.0 shows its instruction; the empty block is just its name.
-    assert 'n0 [label="bb.0\\n  %0:gr32 = MOV32rm ...", code="%0:gr32 = MOV32rm ..."]' in dot
-    assert 'n1 [label="bb.1"]' in dot  # no code attribute for empty blocks
+    # bb.0 shows its instruction; the empty block carries its name alone.
+    assert (
+        'n0 [name="bb.0", label="%0:gr32 = MOV32rm ...", code="%0:gr32 = MOV32rm ..."]'
+    ) in dot
+    assert 'n1 [name="bb.1"];' in dot  # no label/code attributes for empty blocks
     assert "n0 -> n1" in dot
     assert "n0 -> n2" in dot
     assert "n1 -> n2" in dot
@@ -234,7 +281,8 @@ entry:
     dot = ir_cfg_dot(ir)
     # !dbg tails dropped, label instructions capped at MAX_CODE_LINES...
     assert "!dbg" not in dot
-    assert dot.count("\\n  %") == MAX_CODE_LINES
+    label = re.search(r'label="((?:[^"\\]|\\.)*)"', dot).group(1)
+    assert len(label.split("\\n")) == MAX_CODE_LINES
     # ...but the code attribute carries every instruction untruncated.
     assert 'code="%0 = add i32 0, 1\\n%1 = add i32 0, 2\\n%2 = add i32 0, 3\\n%3 = add i32 0, 4\\n%4 = add i32 0, 5\\n%5 = add i32 0, 6\\n%6 = add i32 0, 7\\nret void"' in dot
 
