@@ -18,7 +18,9 @@ chunk scripts fill.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +39,35 @@ FRONTEND_FILES = (
     "vendor/dagre.min.js",
     "vendor/cytoscape-dagre.js",
 )
+
+
+# Asset references in index.html that get a cache-busting stamp. A report is
+# rebuilt over its own directory, so a browser holding the previous app.js or
+# style.css keeps serving it against the new index.html -- half the UI is then
+# from one build and half from another, which reads as a broken feature rather
+# than a stale cache. The stamp is a digest of the file's own bytes, so it
+# changes only when the asset does and normal caching still applies.
+# An already-stamped reference must match too, so re-stamping a report in place
+# replaces the digest rather than silently doing nothing.
+ASSET_REF_RE = re.compile(
+    r'(?P<attr>href|src)="(?P<path>[^"?#]+\.(?:js|css))(?:\?v=[0-9a-f]+)?"'
+)
+
+
+def _stamp_assets(report_dir: Path) -> None:
+    """Rewrite index.html's asset URLs to <name>?v=<content digest>."""
+    index = report_dir / "index.html"
+    if not index.is_file():
+        return
+
+    def stamp(match: re.Match[str]) -> str:
+        asset = report_dir / match.group("path")
+        if not asset.is_file():
+            return match.group(0)
+        digest = hashlib.sha256(asset.read_bytes()).hexdigest()[:12]
+        return f'{match.group("attr")}="{match.group("path")}?v={digest}"'
+
+    index.write_text(ASSET_REF_RE.sub(stamp, index.read_text()))
 
 
 @dataclass
@@ -175,4 +206,5 @@ def emit_report(
             destination = report_dir / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+    _stamp_assets(report_dir)
     return data_dir / "manifest.json"

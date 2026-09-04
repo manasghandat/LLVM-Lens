@@ -10,6 +10,17 @@
 <header id="topbar">
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>LLVM-Lens</div>
   <div class="meta" id="meta"></div>
+  <button class="chip" id="cmdBtn" title="Show the exact clang/opt/llc commands that built this report" aria-expanded="false">commands</button>
+  <!-- The exact argv of every stage, dropped from the topbar. A child of the
+       header so it hangs off whatever height the header has; hidden until
+       asked for, since it is provenance, not something to read per pass. -->
+  <section class="cmdsheet" id="cmdSheet" hidden>
+    <div class="cmdsheet-head">
+      <span class="cmdsheet-title">commands as run</span>
+      <button class="chip" id="cmdClose" title="close">✕</button>
+    </div>
+    <div class="cmdsheet-body" id="cmdBody"></div>
+  </section>
 </header>
 
 <div class="workspace">

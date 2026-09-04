@@ -63,6 +63,7 @@ button { font-family: var(--mono); }
 /* --- topbar: the instrument plate --------------------------------------- */
 
 #topbar {
+  position: relative;  /* anchors the command sheet below it */
   display: flex; gap: 20px; align-items: center;
   height: var(--topbar-h); padding: 0 16px;
   background: var(--panel);
@@ -86,6 +87,34 @@ button { font-family: var(--mono); }
 
 .meta { color: var(--dim); font-size: 11px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+/* --- command sheet: the exact argv of every stage, dropped from the topbar - */
+
+#cmdBtn { flex: none; border: 1px solid var(--line); }
+
+.cmdsheet {
+  position: absolute; z-index: 20; top: 100%; right: 0;
+  width: min(760px, 100vw);
+  max-height: calc(100vh - var(--topbar-h) - 24px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-top: 0; border-right: 0; border-radius: 0 0 0 3px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.cmdsheet-head { display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
+.cmdsheet-title { flex: 1; font-size: 11px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--dim); }
+.cmdsheet-body { padding: 10px 12px 12px; }
+
+.cmdrow + .cmdrow { margin-top: 12px; }
+.cmdrow-head { display: flex; align-items: center; gap: 10px; }
+.cmdstage { color: var(--trace); font-size: 11px; letter-spacing: 0.12em;
+  text-transform: uppercase; }
+.cmdnote { flex: 1; color: var(--dim); font-size: 11px; }
+.cmdline { margin: 5px 0 0; padding: 8px 10px;
+  background: var(--well); border: 1px solid var(--line); border-radius: 2px;
+  color: var(--ink); font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-all; user-select: all; }
 
 .check { display: flex; gap: 6px; align-items: center; color: var(--dim);
   font-size: 11px; cursor: pointer; white-space: nowrap; }

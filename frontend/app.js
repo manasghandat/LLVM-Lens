@@ -947,6 +947,58 @@ function mountCfg(el, dot) {
 
 /* --- boot ---------------------------------------------------------------- */
 
+/* --- command sheet --------------------------------------------------------- */
+// metadata.commands is the argv of every stage that actually ran (cli/main.py
+// build_commands), instrumentation flags and all. It answers "what exactly
+// produced this report" -- which clang, which pipeline string, which triple,
+// which plugin .so -- for someone reading the report on another machine.
+
+function renderCommands(manifest) {
+  const commands = (manifest.metadata || {}).commands || [];
+  const body = document.getElementById("cmdBody");
+  const button = document.getElementById("cmdBtn");
+  // Older reports carry no commands; the button would open an empty sheet.
+  if (!commands.length) { button.hidden = true; return; }
+  body.innerHTML = commands.map((c, i) => `
+    <div class="cmdrow">
+      <div class="cmdrow-head">
+        <span class="cmdstage">${escapeHtml(c.stage || "")}</span>
+        <span class="cmdnote">${escapeHtml(c.note || "")}</span>
+        <button class="chip cmdcopy" data-cmd="${i}">copy</button>
+      </div>
+      <pre class="cmdline">${escapeHtml(c.line || (c.argv || []).join(" "))}</pre>
+    </div>`).join("");
+}
+
+// Reports open from file://, where navigator.clipboard is unavailable in some
+// browsers; fall back to the selection-based copy, which works everywhere.
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+function legacyCopy(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:-1000px;opacity:0";
+  document.body.appendChild(area);
+  area.select();
+  try { document.execCommand("copy"); } catch (e) { /* nothing else to try */ }
+  area.remove();
+}
+
+function toggleCommands(open) {
+  const sheet = document.getElementById("cmdSheet");
+  const button = document.getElementById("cmdBtn");
+  const show = open === undefined ? sheet.hidden : open;
+  sheet.hidden = !show;
+  button.classList.toggle("on", show);
+  button.setAttribute("aria-expanded", String(show));
+}
+
 function renderMeta(manifest) {
   const m = manifest.metadata;
   // opt, llc and llvm-dis all report the same "LLVM version X" string, so
@@ -971,6 +1023,7 @@ async function boot() {
   const manifest = await manifestPromise;
   CURRENT_MANIFEST = manifest;
   renderMeta(manifest);
+  renderCommands(manifest);
   renderLaneTabs();
   renderPassList();
   renderFnList();
@@ -997,6 +1050,20 @@ document.querySelectorAll("#passPanel .ptab").forEach(b =>
     const first = passSummaries().find(p => p.lane === STATE.lane);
     if (first) selectPass(first.id);
   }));
+
+document.getElementById("cmdBtn").addEventListener("click", () => toggleCommands());
+document.getElementById("cmdClose").addEventListener("click", () => toggleCommands(false));
+document.getElementById("cmdBody").addEventListener("click", evt => {
+  const b = evt.target.closest(".cmdcopy");
+  if (!b) return;
+  const line = b.closest(".cmdrow").querySelector(".cmdline").textContent;
+  copyText(line);
+  b.textContent = "copied";
+  setTimeout(() => { b.textContent = "copy"; }, 1200);
+});
+document.addEventListener("keydown", evt => {
+  if (evt.key === "Escape") toggleCommands(false);
+});
 
 document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");

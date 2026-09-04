@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from cli.diff import FnChange
 from cli.emit import ReportPass, emit_report
 from cli.main import (
     BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
-    build_input_pass, build_lane_a, build_lane_b, build_report,
+    build_commands, build_input_pass, build_lane_a, build_lane_b, build_report,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -76,6 +77,27 @@ def test_emit_report_writes_layout(tmp_path):
     # file://-safe script wrappers
     assert "__LLVM_LENS_MANIFEST__" in (data / "manifest.js").read_text()
     assert "window.__LLVM_LENS_DATA__" in (data / "pass-1.js").read_text()
+
+
+def test_emit_report_stamps_assets_so_a_rebuild_is_not_served_from_cache(tmp_path):
+    """A rebuilt report must not load the previous build's app.js."""
+    report = tmp_path / "report"
+    emit_report(report, passes=_passes_fixture(), metadata={}, frontend_dir=FRONTEND)
+    first = (report / "index.html").read_text()
+    stamps = re.findall(r'(?:href|src)="([^"]+\?v=[0-9a-f]{12})"', first)
+    # Every script and stylesheet reference carries a digest.
+    assert len(stamps) == len(re.findall(r'(?:href|src)="[^"]+\.(?:js|css)', first))
+
+    # Same assets -> same stamps, so unchanged files stay cacheable.
+    emit_report(report, passes=_passes_fixture(), metadata={}, frontend_dir=FRONTEND)
+    assert (report / "index.html").read_text() == first
+
+    # A changed asset gets a new stamp, which is what forces the reload.
+    (report / "app.js").write_text("/* different */\n")
+    from cli.emit import _stamp_assets
+    _stamp_assets(report)
+    assert re.search(r'src="app\.js\?v=([0-9a-f]{12})"', (report / "index.html").read_text()
+                     ).group(1) != re.search(r'src="app\.js\?v=([0-9a-f]{12})"', first).group(1)
 
 
 def test_emit_report_missing_frontend_is_tolerated(tmp_path):
@@ -313,6 +335,34 @@ def test_build_lane_b_on_fixture():
     assert rewriter.reg_map
 
 
+# --- command sheet ---------------------------------------------------------------
+
+
+class _Stub:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_build_commands_records_every_stage_that_ran():
+    commands = build_commands(
+        _Stub(kind="clang", cmd=("clang-22", "-S", "-emit-llvm", "-o", "a.ll", "a.c")),
+        _Stub(cmd=("opt-22", "-passes=default<O2>", "-o", "b.ll", "a.ll")),
+        _Stub(cmd=("llc-22", "-o", "a.s", "b.ll")),
+    )
+    assert [c["stage"] for c in commands] == ["compile", "opt", "llc"]
+    assert commands[0]["argv"][0] == "clang-22"
+    # The shell-quoted line is what the viewer shows and a reader pastes.
+    assert commands[1]["line"] == "opt-22 '-passes=default<O2>' -o b.ll a.ll"
+    assert all(c["note"] for c in commands)
+
+
+def test_build_commands_omits_a_stage_that_never_ran():
+    """An opt that emitted nothing means no llc, and so no llc command."""
+    commands = build_commands(_Stub(kind="passthrough", cmd=("cp", "a.ll", "b.ll")), None, None)
+    assert [c["stage"] for c in commands] == ["compile"]
+    assert "already textual LLVM IR" in commands[0]["note"]
+
+
 # --- full pipeline (needs toolchain; skips when unavailable) ----------------------
 
 
@@ -361,3 +411,10 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     chunk = json.loads((tmp_path / "report" / "data" / f"pass-{first['id']}.json").read_text())
     assert chunk["functions"][MODULE_FN]["before"] == ""
     assert "define" in chunk["functions"][MODULE_FN]["after"]
+
+    # Every stage's exact argv travels with the report.
+    commands = manifest["metadata"]["commands"]
+    assert [c["stage"] for c in commands] == ["compile", "opt", "llc"]
+    assert commands[0]["argv"][-1].endswith("sample.c")
+    assert "-passes=mem2reg" in commands[1]["argv"]
+    assert "-print-after-all" in commands[2]["argv"]

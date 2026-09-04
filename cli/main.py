@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from typing import Any
 import click
 
 from .cfg import ir_cfg_dot, machine_cfg_dot
-from .compile import compile_to_ir
+from .compile import CompiledSource, compile_to_ir
 from .diff import FnChange
 from .emit import ReportPass, emit_report
 from .parsers.debug_pass_manager import parse_pass_runs
@@ -37,8 +38,8 @@ from .parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
 )
 from .parsers.time_passes import parse_time_passes
-from .runner_llc import run_llc
-from .runner_opt import run_opt
+from .runner_llc import LlcResult, run_llc
+from .runner_opt import OptResult, run_opt
 from .sourcemap import (
     MIR_REF_RE, DebugTable, LineMap, encode, harvest_ir_tables, harvest_mir_table,
     has_debug_info, map_lines, parse_debug_table, read_sources,
@@ -500,6 +501,51 @@ def _attach_reg_maps(
 # --- pipeline -----------------------------------------------------------------
 
 
+# What each stage's command line is called in the report's command sheet, and
+# what it did. Keyed by the CompiledSource.kind / lane the command belongs to.
+COMMAND_TITLES = {
+    "clang": ("compile", "source to LLVM IR"),
+    "llvm-dis": ("compile", "bitcode to textual LLVM IR"),
+    "passthrough": ("compile", "input is already textual LLVM IR; copied in"),
+    "opt": ("opt", "middle-end pipeline (Lane A)"),
+    "llc": ("llc", "backend pipeline (Lane B)"),
+}
+
+
+def build_commands(
+    compiled: CompiledSource,
+    opt_result: OptResult | None,
+    llc_result: LlcResult | None,
+) -> list[dict[str, Any]]:
+    """The exact argv of every stage that ran, in run order.
+
+    Reports get read away from the machine that produced them, and the flags
+    matter: which clang, which pipeline string, which triple, which plugin .so.
+    Each entry carries the argv as a list *and* shell-quoted as one line, so
+    the viewer can show it and a reader can paste it to reproduce the stage
+    outside the tool. The instrumentation flags are part of the command as run
+    and are not filtered out -- the point is exactness, not a tidy retelling.
+
+    A stage that did not run (llc after an opt that emitted nothing) has no
+    entry; the sheet then documents exactly how far the pipeline got.
+    """
+    stages: list[tuple[str, tuple[str, ...]]] = [(compiled.kind, compiled.cmd)]
+    if opt_result is not None:
+        stages.append(("opt", opt_result.cmd))
+    if llc_result is not None:
+        stages.append(("llc", llc_result.cmd))
+    commands = []
+    for kind, argv in stages:
+        stage, note = COMMAND_TITLES.get(kind, (kind, ""))
+        commands.append({
+            "stage": stage,
+            "note": note,
+            "argv": list(argv),
+            "line": shlex.join(argv),
+        })
+    return commands
+
+
 def _attach_source_maps(passes: list[ReportPass]) -> list[dict[str, str]]:
     """Read every mapped source file and re-encode the maps against its index.
 
@@ -636,6 +682,7 @@ def build_report(
         "plugins": list(load_pass_plugins) + list(load),
         "customPasses": list(custom_passes),
         "mtriple": mtriple,
+        "commands": build_commands(compiled, opt_result, llc_result),
         "toolVersions": {name: tool.version for name, tool in toolchain.tools.items()},
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "totalTimeMs": round(total_ms, 1),
