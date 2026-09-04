@@ -369,13 +369,33 @@ function renderLaneTabs() {
     b.classList.toggle("active", b.dataset.lane === STATE.lane));
 }
 
+// --- "only changed" (both lanes) ---
+// "changed" means the same thing in either lane -- this pass's snapshot of some
+// function differs from the previous snapshot of that function (cli/diff.py
+// FnChange.changed) -- so the filter applies to machine passes exactly as it
+// does to IR passes. Two things survive it: a custom pass, because the point of
+// badging one is to be able to find it and an analysis-only plugin never
+// changes IR, and each lane's input card, which carries changed=true.
+function passVisible(p, onlyChanged) {
+  return !onlyChanged || p.changed || p.isCustom;
+}
+
+// Lines added / removed across every function the pass touched (cli/emit.py
+// _line_delta). This is the one per-pass number both lanes can show: llc's
+// legacy pass manager reports no analyses, so the machine rows used to read
+// "+0 -0" for every pass. Input cards carry no delta -- nothing precedes them.
+function lineDeltaHtml(p) {
+  const d = p.lineDelta;
+  if (!d) return '<span class="stat"></span>';
+  return `<span class="stat" title="lines added / removed">` +
+    `<span class="plus">+${d.added}</span> <span class="minus">−${d.removed}</span></span>`;
+}
+
 function renderPassList() {
   const onlyChanged = document.getElementById("changedOnly").checked;
   const passes = passSummaries().filter(p =>
-    p.lane === STATE.lane &&
-    (!onlyChanged || p.changed || p.lane === "mir" || p.isCustom));
+    p.lane === STATE.lane && passVisible(p, onlyChanged));
   const rows = passes.map(p => {
-    const a = p.analysisCounts || {};
     const idx = String(p.runIndex).padStart(3, "0");
     return `
       <div class="row ${p.changed || p.isCustom ? "" : "dim"} ${p.id === STATE.passId ? "sel" : ""}" data-id="${p.id}">
@@ -384,7 +404,7 @@ function renderPassList() {
         ${p.isCustom ? '<span class="badge" title="custom pass (--custom-pass)">custom</span>' : ""}
         ${p.changed ? '<span class="dot" title="changed IR"></span>' : ""}
         ${p.spillCount ? `<span class="warn" title="${p.spillCount} spills">⚠${p.spillCount}</span>` : ""}
-        <span class="stat" title="analyses run / invalidated">+${a.run || 0} −${a.invalidated || 0}</span>
+        ${lineDeltaHtml(p)}
         <span class="time">${p.timeMs != null ? p.timeMs.toFixed(2) + " ms" : ""}</span>
       </div>`;
   }).join("");

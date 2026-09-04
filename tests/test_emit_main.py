@@ -108,6 +108,38 @@ def test_emit_report_missing_frontend_is_tolerated(tmp_path):
     assert (tmp_path / "r" / "data" / "manifest.json").is_file()
 
 
+def test_manifest_carries_line_deltas_for_both_lanes(tmp_path):
+    """llc reports no analyses, so the delta is lane B's only per-pass number."""
+    ir = ReportPass(
+        id=1, lane="ir", name="SROAPass", pass_id="SROAPass", run_index=1,
+        time_ms=None, changed=True,
+        functions={"main": FnChange("main", "a\nb\nc\n", "a\nx\n")},
+    )
+    mir = ReportPass(
+        id=2, lane="mir", name="Greedy", pass_id="greedy", run_index=1,
+        time_ms=None, changed=True,
+        functions={
+            "main": FnChange("main", "", "p\nq\n"),
+            "getTime": FnChange("getTime", "r\n", "r\n"),
+        },
+    )
+    card = ReportPass(
+        id=3, lane="mir", name=BACKEND_INPUT_PASS_NAME, pass_id=None, run_index=0,
+        time_ms=None, changed=True, is_input=True,
+        functions={MODULE_FN: FnChange(MODULE_FN, "", "whole\nmodule\n")},
+    )
+    manifest = emit_report(
+        tmp_path / "report", passes=[ir, mir, card],
+        metadata={}, frontend_dir=FRONTEND,
+    )
+    deltas = {p["name"]: p["lineDelta"] for p in json.loads(manifest.read_text())["passes"]}
+    assert deltas["SROAPass"] == {"added": 1, "removed": 2}
+    # Summed across every function the machine pass touched.
+    assert deltas["Greedy"] == {"added": 2, "removed": 0}
+    # Nothing precedes an input card, so its whole module is not "added".
+    assert deltas[BACKEND_INPUT_PASS_NAME] is None
+
+
 def test_emit_report_serializes_is_custom(tmp_path):
     custom = ReportPass(
         id=9, lane="ir", name="MyCustomPass", pass_id="MyCustomPass",

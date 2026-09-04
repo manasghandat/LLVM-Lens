@@ -202,9 +202,14 @@ body.rail-collapsed .rail-edge { display: none; }
   font-variant-numeric: tabular-nums; }
 .row .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; flex: 1; }
-.row .time { color: var(--faint); font-size: 10px;
+/* The two numeric columns are right-aligned with a floor width: line counts
+   vary per row ("+0 −0" to "+305 −0"), and without it every row's timing
+   would sit at a different x. */
+.row .time { color: var(--faint); font-size: 10px; flex: none;
+  min-width: 52px; text-align: right; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
 .row .stat { color: var(--faint); font-size: 10px; flex: none;
+  min-width: 60px; text-align: right; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
 .row .stat .minus { color: var(--del); }
 .row .stat .plus { color: var(--add); }

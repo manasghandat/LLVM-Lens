@@ -42,6 +42,21 @@ def test_fn_change_unified_diff():
     assert "+c" in diff
 
 
+def test_fn_change_line_delta_counts_both_sides_of_a_rewrite():
+    change = FnChange("f", "a\nb\nc\n", "a\nx\ny\nz\n")
+    # b, c replaced by x, y, z: three added, two removed -- what the diff shows.
+    assert change.line_delta == (3, 2)
+
+
+def test_fn_change_line_delta_of_an_untouched_function_is_zero():
+    assert FnChange("f", "a\nb\n", "a\nb\n").line_delta == (0, 0)
+
+
+def test_fn_change_line_delta_of_a_first_snapshot_is_all_additions():
+    """Machine IR does not exist before ISel, so its first dump is all new."""
+    assert FnChange("f", "", "a\nb\nc\n").line_delta == (3, 0)
+
+
 # --- cfg: IR -------------------------------------------------------------------
 
 

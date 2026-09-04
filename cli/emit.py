@@ -137,6 +137,25 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
     return entry
 
 
+def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
+    """Lines added/removed across every function this pass touched.
+
+    The pass list shows this per row, in both lanes. It is None for an input
+    card: nothing in the lane precedes one, so counting its whole module as
+    "added" would read as a pass that wrote the program. llc's legacy PM
+    reports no analyses at all, so this is the only per-pass number lane B
+    can show -- before it, every machine row read "+0 -0".
+    """
+    if pass_.is_input:
+        return None
+    added = removed = 0
+    for change in pass_.functions.values():
+        fn_added, fn_removed = change.line_delta
+        added += fn_added
+        removed += fn_removed
+    return {"added": added, "removed": removed}
+
+
 def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[str, Any]:
     pass_list = [
         {
@@ -149,6 +168,7 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "changed": p.changed,
             "isCustom": p.is_custom,
             "isInput": p.is_input,
+            "lineDelta": _line_delta(p),
             "spillCount": sum(p.spills.values()) if p.spills else None,
             "analysisCounts": {
                 "run": len(p.analyses.get("run", [])),

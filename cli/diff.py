@@ -31,6 +31,26 @@ class FnChange:
     def changed(self) -> bool:
         return self.before != self.after
 
+    @property
+    def line_delta(self) -> tuple[int, int]:
+        """(added, removed) line counts, the same tally the diff view shows.
+
+        A replaced region counts on both sides, exactly as it renders: three
+        lines rewritten into two is +2 -3, not +0 -1. Whole-text insertions
+        (a function's first snapshot, machine IR before ISel has run) are all
+        additions, which is what actually happened.
+        """
+        added = removed = 0
+        matcher = difflib.SequenceMatcher(
+            None, self.before.splitlines(), self.after.splitlines(), autojunk=False,
+        )
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag in ("replace", "delete"):
+                removed += i2 - i1
+            if tag in ("replace", "insert"):
+                added += j2 - j1
+        return added, removed
+
     def unified_diff(self, context: int = 2) -> str:
         return "".join(difflib.unified_diff(
             self.before.splitlines(), self.after.splitlines(),

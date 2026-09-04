@@ -244,6 +244,47 @@ console.log("frontend mode checks passed");
 """
 
 
+FILTER_HARNESS = r"""
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const start = src.indexOf('// --- "only changed" (both lanes) ---');
+const end = src.indexOf("function renderPassList()");
+if (start < 0 || end < 0) { console.error("filter section not found"); process.exit(2); }
+eval(src.slice(start, end));
+
+const failures = [];
+const check = (name, cond) => { if (!cond) failures.push(name); };
+
+// Off, everything shows.
+check("filter off keeps an unchanged ir pass",
+      passVisible({ lane: "ir", changed: false }, false));
+check("filter off keeps an unchanged machine pass",
+      passVisible({ lane: "mir", changed: false }, false));
+
+// On, the rule is the same in both lanes -- this is what was broken for mir.
+check("filter drops an unchanged machine pass",
+      !passVisible({ lane: "mir", changed: false }, true));
+check("filter drops an unchanged ir pass",
+      !passVisible({ lane: "ir", changed: false }, true));
+check("filter keeps a changed machine pass",
+      passVisible({ lane: "mir", changed: true }, true));
+check("filter keeps a changed ir pass",
+      passVisible({ lane: "ir", changed: true }, true));
+
+// Exemptions.
+check("filter keeps an unchanged custom machine pass",
+      passVisible({ lane: "mir", changed: false, isCustom: true }, true));
+check("filter keeps an unchanged custom ir pass",
+      passVisible({ lane: "ir", changed: false, isCustom: true }, true));
+check("filter keeps each lane's input card",
+      passVisible({ lane: "mir", changed: true, isInput: true }, true) &&
+      passVisible({ lane: "ir", changed: true, isInput: true }, true));
+
+if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
+console.log("frontend filter checks passed");
+"""
+
+
 # Harness for the vendored graph stack: load cytoscape + dagre + the
 # cytoscape-dagre UMD registration under node, run a headless dagre layout on
 # a cyclic CFG, and verify ranks plus the back-edge classification used by
@@ -319,6 +360,13 @@ def test_diff_renderer():
 
 def test_view_mode_gating():
     result = _run_node(MODE_HARNESS, str(FRONTEND / "app.js"))
+    assert result.returncode == 0, result.stderr
+    assert "passed" in result.stdout
+
+
+def test_only_changed_filter_applies_to_both_lanes():
+    """The machine lane used to bypass the filter entirely."""
+    result = _run_node(FILTER_HARNESS, str(FRONTEND / "app.js"))
     assert result.returncode == 0, result.stderr
     assert "passed" in result.stdout
 
