@@ -7,9 +7,10 @@ Accepts:
   * textual IR (.ll) -- passed through unchanged;
   * bitcode (.bc) -- disassembled with llvm-dis.
 
-Crash/timeout safety: subprocesses run with a timeout, in their own process
-group, and are killed as a group on timeout so no children linger; failures
-raise CompileError carrying the captured stderr tail.
+Crash/timeout safety: subprocesses run in their own process group and are
+killed as a group on timeout so no children linger; failures raise
+CompileError carrying the captured stderr tail. There is no timeout unless
+one is asked for (--timeout) -- see cli/proc.py.
 
 The result is a CompiledSource describing the IR file plus the toolchain and
 command that produced it -- the pieces the report metadata needs.
@@ -17,18 +18,15 @@ command that produced it -- the pieces the report metadata needs.
 
 from __future__ import annotations
 
-import argparse
 import datetime as _dt
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from .proc import ProcError, run_capture
-from .toolchain import Toolchain, ToolchainError, discover_toolchain
+from .toolchain import Toolchain
 
-DEFAULT_TIMEOUT = 30  # seconds
-
-SOURCE_EXTS = {".c", ".cc", ".cpp", ".cxx", ".C"}
+SOURCE_EXTS = {".c", ".cc", ".cpp", ".cxx"}
 
 # Tokens that must appear in a plausible textual IR module (cheap sniff;
 # llvm-as round-trips are the opt runner's job).
@@ -46,20 +44,9 @@ class CompiledSource:
     source_path: Path
     ir_path: Path
     kind: str  # "clang" | "passthrough" | "llvm-dis"
-    cmd: tuple[str, ...]  # command that produced ir_path
+    cmd: list[str]  # command that produced ir_path
     toolchain: Toolchain
     compiled_at: str  # ISO-8601 UTC timestamp
-
-
-def clang_ir_command(clang: Path, source: Path, out: Path, extra_args=()) -> list[str]:
-    """Build the clang invocation that turns a C/C++ source into IR."""
-    return [
-        str(clang), "-S", "-emit-llvm", "-O0",
-        "-Xclang", "-disable-O0-optnone",
-        "-g",
-        *extra_args,
-        "-o", str(out), str(source),
-    ]
 
 
 def llvm_dis_command(llvm_dis: Path, source: Path, out: Path) -> list[str]:
@@ -67,7 +54,7 @@ def llvm_dis_command(llvm_dis: Path, source: Path, out: Path) -> list[str]:
     return [str(llvm_dis), "-o", str(out), str(source)]
 
 
-def _run(cmd: list[str], timeout: float) -> None:
+def _run(cmd: list[str], timeout: float | None) -> None:
     """Run a subprocess; a non-zero exit or timeout is a CompileError."""
     try:
         result = run_capture(cmd, timeout)
@@ -106,13 +93,10 @@ def _output_name(source: Path) -> str:
 
 def compile_to_ir(
     source: str | Path,
-    *,
+    toolchain: Toolchain,
     out_dir: str | Path | None = None,
-    bin_dir: str | Path | None = None,
-    expected_major: int | None = None,
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float | None = None,
     extra_args: tuple[str, ...] = (),
-    toolchain: Toolchain | None = None,
 ) -> CompiledSource:
     """Compile/convert *source* to textual IR and return the result.
 
@@ -122,8 +106,6 @@ def compile_to_ir(
     source = Path(source)
     if not source.is_file():
         raise CompileError(f"input not found: {source}")
-    if toolchain is None:
-        toolchain = discover_toolchain(bin_dir, expected_major)
 
     out_dir = Path(out_dir) if out_dir else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -137,13 +119,19 @@ def compile_to_ir(
     suffix = source.suffix
 
     if suffix in SOURCE_EXTS:
-        cmd = tuple(clang_ir_command(toolchain.clang.path, source, out, extra_args))
-        _run(list(cmd), timeout)
+        cmd = [
+            str(toolchain.clang.path), "-S", "-emit-llvm", "-O0",
+            "-Xclang", "-disable-O0-optnone",
+            "-g",
+            *extra_args,
+            "-o", str(out), str(source)
+        ]
+        _run(cmd, timeout)
         return CompiledSource(source, out, "clang", cmd, toolchain, compiled_at)
 
     if suffix == ".bc":
-        cmd = tuple(llvm_dis_command(toolchain.llvm_dis.path, source, out))
-        _run(list(cmd), timeout)
+        cmd = [str(toolchain.llvm_dis.path), "-o", str(out), str(source)]
+        _run(cmd, timeout)
         return CompiledSource(source, out, "llvm-dis", cmd, toolchain, compiled_at)
 
     if suffix == ".ll":
@@ -160,34 +148,3 @@ def compile_to_ir(
         f"unsupported input extension {suffix!r} (supported: "
         + ", ".join(sorted(SOURCE_EXTS | {".ll", ".bc"})) + ")"
     )
-
-
-def _main(argv: list[str] | None = None) -> None:
-    """Dev helper: python -m cli.compile. The full CLI is cli/main.py."""
-    parser = argparse.ArgumentParser(
-        prog="python -m cli.compile",
-        description="Compile a source file to LLVM IR.",
-    )
-    parser.add_argument("source")
-    parser.add_argument("-o", "--out-dir", default=None)
-    parser.add_argument("--bin-dir", default=None)
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
-    args = parser.parse_args(argv)
-
-    try:
-        result = compile_to_ir(
-            args.source, out_dir=args.out_dir,
-            bin_dir=args.bin_dir, timeout=args.timeout,
-        )
-    except (CompileError, ToolchainError) as exc:
-        raise SystemExit(f"error: {exc}") from exc
-
-    print(f"kind:   {result.kind}")
-    print(f"ir:     {result.ir_path}")
-    print(f"cmd:    {' '.join(result.cmd)}")
-    print(f"llvm:   {result.toolchain.clang.version}")
-    print(f"at:     {result.compiled_at}")
-
-
-if __name__ == "__main__":
-    _main()

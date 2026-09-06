@@ -204,12 +204,10 @@ def has_debug_info(ir_text: str) -> bool:
 def harvest_ir_tables(
     input_ir: str | Path,
     passes: str,
-    *,
     toolchain: Toolchain,
-    mtriple: str | None = None,
     load_pass_plugins: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
-    timeout: float = 60.0,
+    timeout: float | None = None,
 ) -> list[tuple[str, str, DebugTable]]:
     """Re-run opt at module scope; return (pass, function, table) per dump.
 
@@ -221,7 +219,7 @@ def harvest_ir_tables(
 
     cmd = opt_command(
         toolchain.opt.path, Path(input_ir), passes,
-        out=Path("/dev/null"), mtriple=mtriple,
+        out=Path("/dev/null"),
         load_pass_plugins=load_pass_plugins, print_after=print_after,
         extra_args=("-print-module-scope",),
     )
@@ -239,11 +237,9 @@ def harvest_ir_tables(
 
 def harvest_mir_table(
     input_ir: str | Path,
-    *,
     toolchain: Toolchain,
-    mtriple: str | None = None,
     load: tuple[str, ...] = (),
-    timeout: float = 60.0,
+    timeout: float | None = None,
 ) -> DebugTable:
     """Harvest the backend's metadata table from a stop-after MIR dump.
 
@@ -251,8 +247,6 @@ def harvest_mir_table(
     this single table resolves ``debug-location`` in every machine pass.
     """
     cmd = [str(toolchain.llc.path), f"-stop-after={MIR_STOP_AFTER}", "-o", "-"]
-    if mtriple:
-        cmd.append(f"-mtriple={mtriple}")
     cmd.extend(f"-load={plugin}" for plugin in load)
     cmd.append(str(input_ir))
     try:

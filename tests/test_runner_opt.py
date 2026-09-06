@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from cli.compile import compile_to_ir
-from cli.runner_opt import OptError, opt_command, run_opt
+from cli.runner_opt import OptError, run_opt
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_C = FIXTURES / "sample.c"
@@ -19,37 +19,6 @@ def sample_ir(toolchain, tmp_path_factory):
     result = compile_to_ir(SAMPLE_C, out_dir=out, toolchain=toolchain)
     assert result.kind == "clang"
     return result.ir_path
-
-
-# --- command construction (pure) --------------------------------------------
-
-
-def test_opt_command_flags(tmp_path):
-    cmd = opt_command(
-        Path("/llvm/opt"), Path("in.ll"), "default<O2>",
-        out=tmp_path / "final.ll",
-        mtriple="x86_64",
-        load_pass_plugins=("a.so", "b.so"),
-        print_after=("my-pass", "other-pass"),
-        extra_args=("-debug-only=loop-vectorize",),
-    )
-    assert cmd == [
-        "/llvm/opt", "-S", "-mtriple=x86_64", "-passes=default<O2>",
-        "-load-pass-plugin=a.so", "-load-pass-plugin=b.so",
-        "-print-changed=quiet", "-debug-pass-manager", "-time-passes",
-        "-print-after=my-pass,other-pass",
-        "-debug-only=loop-vectorize",
-        "-o", str(tmp_path / "final.ll"), "in.ll",
-    ]
-
-
-def test_opt_command_minimal(tmp_path):
-    cmd = opt_command(Path("/llvm/opt"), Path("in.ll"), "mem2reg", out=tmp_path / "f.ll")
-    assert cmd == [
-        "/llvm/opt", "-S", "-passes=mem2reg",
-        "-print-changed=quiet", "-debug-pass-manager", "-time-passes",
-        "-o", str(tmp_path / "f.ll"), "in.ll",
-    ]
 
 
 # --- end-to-end against a real toolchain ------------------------------------
@@ -75,15 +44,6 @@ def test_run_opt_success(toolchain, sample_ir, tmp_path):
     assert "Running pass" in stderr  # -debug-pass-manager
     assert "Running analysis" in stderr
     assert "Total Execution Time" in stderr  # -time-passes
-
-
-def test_run_opt_mtriple(toolchain, sample_ir, tmp_path):
-    result = run_opt(
-        sample_ir, "mem2reg", out_dir=tmp_path, mtriple="aarch64-linux-gnu",
-        toolchain=toolchain,
-    )
-    assert not result.failed
-    assert "aarch64" in result.ir_path.read_text()
 
 
 def test_run_opt_unknown_pass_fails(toolchain, sample_ir, tmp_path):

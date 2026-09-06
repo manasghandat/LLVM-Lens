@@ -8,9 +8,9 @@ Tools are located in order:
   3. unversioned binaries on PATH (``clang``).
 
 Every discovered tool must report the expected LLVM major version
-(``LLVM_LENS_LLVM_MAJOR``, default 22). A missing tool or a mixed-version set
-is a hard error, not a warning: pass output captured against one LLVM version
-is not trustworthy when parsed against another.
+(``--llvm-version``, default 22). A missing tool or a mixed-version set is a
+hard error, not a warning: pass output captured against one LLVM version is
+not trustworthy when parsed against another.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from pathlib import Path
 
 DEFAULT_MAJOR = 22
 BIN_DIR_ENV = "LLVM_LENS_BIN_DIR"
-MAJOR_ENV = "LLVM_LENS_LLVM_MAJOR"
 
 TOOLS = ("clang", "opt", "llc", "llvm-dis")
 
@@ -33,7 +32,6 @@ _VERSION_RE = re.compile(r"version (\d+)\.(\d+)\.(\d+)")
 
 class ToolchainError(RuntimeError):
     """Missing, unexecutable, or version-mismatched LLVM tool."""
-
 
 @dataclass(frozen=True)
 class Tool:
@@ -56,16 +54,6 @@ class Toolchain:
         if name.replace("_", "-") in TOOLS:
             return self.tools[name.replace("_", "-")]
         raise AttributeError(name)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        raise ToolchainError(f"{name}={raw!r} is not an integer") from None
 
 
 def _tool_version(name: str, path: Path) -> Tool:
@@ -99,9 +87,10 @@ def _find_tool(name: str, bin_dir: Path | None, major: int) -> Path:
         path = shutil.which(name)
     if path is None:
         raise ToolchainError(
-            f"{name} not found on PATH; install LLVM {major} or point "
-            f"{BIN_DIR_ENV} at its bin dir (e.g. /usr/lib/llvm-{major}/bin on "
-            f"Debian/Ubuntu apt.llvm.org installs)"
+            f"{name} not found on PATH; install LLVM {major}, pass --bin-dir "
+            f"(or set {BIN_DIR_ENV}) pointing at its bin dir (e.g. "
+            f"/usr/lib/llvm-{major}/bin on Debian/Ubuntu apt.llvm.org "
+            f"installs), or select another major with --llvm-version"
         )
     return Path(path)
 
@@ -110,9 +99,14 @@ def discover_toolchain(
     bin_dir: str | Path | None = None,
     expected_major: int | None = None,
 ) -> Toolchain:
-    """Locate clang/opt/llc/llvm-dis and verify they all match the expected major."""
+    """Locate clang/opt/llc/llvm-dis and verify they all match the expected major.
+
+    *expected_major* comes from ``--llvm-version``; it drives the PATH search
+    (``clang-<major>``) as well as the check, so selecting a major is enough to
+    pick up a side-by-side install without also naming its bin dir.
+    """
     if expected_major is None:
-        expected_major = _env_int(MAJOR_ENV, DEFAULT_MAJOR)
+        expected_major = DEFAULT_MAJOR
     if bin_dir is None and os.environ.get(BIN_DIR_ENV):
         bin_dir = Path(os.environ[BIN_DIR_ENV])
     elif bin_dir is not None:
@@ -125,7 +119,8 @@ def discover_toolchain(
         if tool.major != expected_major:
             raise ToolchainError(
                 f"{name} is LLVM {tool.major}, expected {expected_major}: {tool.version}\n"
-                f"set {BIN_DIR_ENV} to a matching LLVM {expected_major} installation"
+                f"pass --llvm-version {tool.major}, or point --bin-dir "
+                f"({BIN_DIR_ENV}) at a matching LLVM {expected_major} installation"
             )
         tools[name] = tool
     return Toolchain(bin_dir=bin_dir, expected_major=expected_major, tools=tools)

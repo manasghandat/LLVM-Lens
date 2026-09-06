@@ -12,7 +12,6 @@ the report is partial, with the crash stack trace captured in stderr.
 
 from __future__ import annotations
 
-import argparse
 import datetime as _dt
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +19,7 @@ from pathlib import Path
 from .proc import ProcError, run_capture
 from .toolchain import Toolchain, discover_toolchain
 
-DEFAULT_TIMEOUT = 60  # seconds
+DEFAULT_TIMEOUT = None  # no wall clock unless --timeout asks for one
 
 ASM_NAME = "final.s"
 STDOUT_LOG_NAME = "llc-stdout.log"
@@ -51,9 +50,7 @@ class LlcResult:
 def llc_command(
     llc: Path,
     input_ir: Path,
-    *,
     out: Path,
-    mtriple: str | None = None,
     load_pass_plugins: tuple[str, ...] = (),
     load: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
@@ -61,8 +58,6 @@ def llc_command(
 ) -> list[str]:
     """Build the llc invocation for the Lane B pipeline."""
     cmd = [str(llc)]
-    if mtriple:
-        cmd.append(f"-mtriple={mtriple}")
     # New-PM plugin passes (pre-codegen IR passes) and legacy machine passes.
     cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
     cmd.extend(f"-load={plugin}" for plugin in load)
@@ -78,14 +73,12 @@ def llc_command(
 
 def run_llc(
     input_ir: str | Path,
-    *,
     out_dir: str | Path | None = None,
-    mtriple: str | None = None,
     load_pass_plugins: tuple[str, ...] = (),
     load: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
-    timeout: float = DEFAULT_TIMEOUT,
+    timeout: float | None = DEFAULT_TIMEOUT,
     toolchain: Toolchain | None = None,
 ) -> LlcResult:
     """Run llc on *input_ir* and capture everything the parsers need."""
@@ -103,10 +96,13 @@ def run_llc(
 
     cmd = llc_command(
         toolchain.llc.path, input_ir,
-        out=asm_path, mtriple=mtriple,
+        out=asm_path,
         load_pass_plugins=load_pass_plugins, load=load, print_after=print_after,
         extra_args=extra_args,
     )
+    # A report is rebuilt over its own directory: drop an earlier build's
+    # assembly so the file existing afterwards means *this* run wrote it.
+    asm_path.unlink(missing_ok=True)
     try:
         result = run_capture(cmd, timeout)
     except ProcError as exc:
@@ -114,7 +110,12 @@ def run_llc(
 
     stdout_path.write_text(result.stdout)
     stderr_path.write_text(result.stderr)
-    emitted = asm_path if asm_path.is_file() else None
+    # Same rule as run_opt's final IR: llc opens -o at startup, so a killed
+    # llc leaves an empty stub and a crashed one a half-written file. Neither
+    # is assembly worth showing, so a failed run reports none.
+    failed = result.timed_out or result.returncode != 0
+    wrote = asm_path.is_file() and asm_path.stat().st_size > 0
+    emitted = asm_path if (wrote and not failed) else None
 
     return LlcResult(
         input_ir=input_ir,
@@ -127,40 +128,3 @@ def run_llc(
         toolchain=toolchain,
         ran_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
     )
-
-
-def _main(argv: list[str] | None = None) -> None:
-    """Dev helper: python -m cli.runner_llc. The full CLI is cli/main.py."""
-    parser = argparse.ArgumentParser(
-        prog="python -m cli.runner_llc",
-        description="Run llc on an IR module with instrumentation.",
-    )
-    parser.add_argument("input_ir")
-    parser.add_argument("-o", "--out-dir", default=None)
-    parser.add_argument("--mtriple", default=None)
-    parser.add_argument("--load-pass-plugin", action="append", default=[])
-    parser.add_argument("--load", action="append", default=[])
-    parser.add_argument("--print-after", action="append", default=[])
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
-    args = parser.parse_args(argv)
-
-    try:
-        result = run_llc(
-            args.input_ir, out_dir=args.out_dir, mtriple=args.mtriple,
-            load_pass_plugins=tuple(args.load_pass_plugin),
-            load=tuple(args.load), print_after=tuple(args.print_after),
-            timeout=args.timeout,
-        )
-    except LlcError as exc:
-        raise SystemExit(f"error: {exc}") from exc
-
-    status = "timeout" if result.timed_out else f"exit {result.returncode}"
-    print(f"status:  {status}")
-    print(f"asm:     {result.asm_path or '(none)'}")
-    print(f"stdout:  {result.stdout_path}")
-    print(f"stderr:  {result.stderr_path}")
-    print(f"cmd:     {' '.join(result.cmd)}")
-
-
-if __name__ == "__main__":
-    _main()

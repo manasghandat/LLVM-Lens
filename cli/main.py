@@ -18,14 +18,14 @@ passes were captured before the failure plus the stderr tail as the error.
 
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import re
 import shlex
+import sys
 import time
 from pathlib import Path
 from typing import Any
-
-import click
 
 from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
@@ -670,15 +670,14 @@ def _attach_source_maps(passes: list[ReportPass]) -> list[dict[str, str]]:
 
 def build_report(
     source: str | Path,
-    *,
     passes: str = DEFAULT_PASSES,
     load_pass_plugins: tuple[str, ...] = (),
     load: tuple[str, ...] = (),
     custom_passes: tuple[str, ...] = (),
-    mtriple: str | None = None,
     output: str | Path = "report",
     bin_dir: str | Path | None = None,
-    timeout: float = 60.0,
+    llvm_version: int | None = None,
+    timeout: float | None = None,
     source_map: bool = True,
 ) -> dict[str, Any]:
     """Run the full pipeline and emit the report. Returns a summary dict."""
@@ -687,20 +686,20 @@ def build_report(
     raw = out / "raw"
     raw.mkdir(parents=True, exist_ok=True)
 
-    toolchain: Toolchain = discover_toolchain(bin_dir)
+    toolchain: Toolchain = discover_toolchain(bin_dir, llvm_version)
 
     # Custom passes are appended as function passes, force-dumped via
     # -print-after, and badged in the report.
     effective_passes = _effective_pipeline(passes, custom_passes)
 
     started = time.perf_counter()
-    compiled = compile_to_ir(source, out_dir=raw, toolchain=toolchain, timeout=timeout)
+    compiled = compile_to_ir(source, toolchain=toolchain, out_dir=raw, timeout=timeout)
     opt_result = run_opt(
-        compiled.ir_path, effective_passes,
-        out_dir=raw, mtriple=mtriple,
+        toolchain, compiled.ir_path, effective_passes,
+        out_dir=raw,
         load_pass_plugins=load_pass_plugins,
         print_after=custom_passes,
-        timeout=timeout, toolchain=toolchain,
+        timeout=timeout,
     )
     opt_stderr = opt_result.stderr_path.read_text(errors="replace")
 
@@ -708,16 +707,15 @@ def build_report(
     # function-scope capture does not carry -- harvest it separately. Skipped
     # outright when the module has no debug info, so -g-less inputs pay nothing.
     input_ir = compiled.ir_path.read_text(errors="replace")
-    mapped = source_map and has_debug_info(input_ir)
     ir_tables = harvest_ir_tables(
-        compiled.ir_path, effective_passes, toolchain=toolchain, mtriple=mtriple,
+        compiled.ir_path, effective_passes, toolchain=toolchain,
         load_pass_plugins=load_pass_plugins, print_after=custom_passes,
         timeout=timeout,
-    ) if mapped else None
+    ) if source_map else None
 
     # The input module leads lane A, so the report opens on what clang emitted
     # rather than on the first pass's output. It survives an opt failure.
-    input_card = build_input_pass(input_ir, compiled.ir_path, mapped=mapped)
+    input_card = build_input_pass(input_ir, compiled.ir_path, mapped=source_map)
     lane_a = [input_card]
 
     # Raw structure data for the hierarchical pipeline tree view. Assigned for
@@ -736,16 +734,20 @@ def build_report(
 
     lane_b: list[ReportPass] = []
     llc_result = None
-    if opt_result.ir_path is not None:
+    # Lane B is only meaningful when opt actually handed it a module: a failed
+    # opt either leaves no final IR or leaves a husk of one, and running llc on
+    # that pins opt's failure on the backend (or, for an empty module, produces
+    # a full machine lane over no functions that reads as a healthy backend).
+    if not opt_result.failed and opt_result.ir_path is not None:
         # Lane B opens on what llc actually reads: the module after every opt
         # pass. Added before llc runs, so it survives a backend crash too.
         lane_b.append(build_input_pass(
             opt_result.ir_path.read_text(errors="replace"), opt_result.ir_path,
             lane="mir", name=BACKEND_INPUT_PASS_NAME,
-            note="after every opt pass", mapped=mapped,
+            note="after every opt pass", mapped=source_map,
         ))
         llc_result = run_llc(
-            opt_result.ir_path, out_dir=raw, mtriple=mtriple,
+            opt_result.ir_path, out_dir=raw,
             load_pass_plugins=load_pass_plugins, load=load,
             print_after=custom_passes,
             timeout=timeout, toolchain=toolchain,
@@ -756,13 +758,10 @@ def build_report(
             # llc numbers metadata once for the module it reads and never
             # renumbers, so a single harvested table covers every machine pass.
             mir_table = harvest_mir_table(
-                opt_result.ir_path, toolchain=toolchain, mtriple=mtriple,
+                opt_result.ir_path, toolchain=toolchain,
                 load=load, timeout=timeout,
-            ) if mapped else None
-            lane_b_passes, mir_nodes, pass_arguments = build_lane_b(
-                llc_stderr, asm_text, custom_passes, mir_table,
-            )
-            lane_b += lane_b_passes
+            ) if source_map else None
+            lane_b += build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
@@ -798,7 +797,6 @@ def build_report(
         "pipeline": effective_passes,
         "plugins": list(load_pass_plugins) + list(load),
         "customPasses": list(custom_passes),
-        "mtriple": mtriple,
         "commands": build_commands(compiled, opt_result, llc_result),
         "toolVersions": {name: tool.version for name, tool in toolchain.tools.items()},
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -833,70 +831,88 @@ def build_report(
 # --- CLI ----------------------------------------------------------------------
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("source", type=click.Path(exists=True, dir_okay=False))
-@click.option("--passes", default=DEFAULT_PASSES, show_default=True,
-              help="New-PM pipeline string for opt (Lane A).")
-@click.option("--load-pass-plugin", "load_pass_plugins", multiple=True,
-              help="New-PM pass plugin .so to load (opt + llc, repeatable).")
-@click.option("--load", "load", multiple=True,
-              help="Legacy plugin .so to load (llc backend only, repeatable).")
-@click.option("--custom-pass", "custom_passes", multiple=True,
-              help="Custom function-pass name to append (as function(<name>)) and badge (repeatable).")
-@click.option("--mtriple", default=None, help="Target triple override, e.g. x86_64.")
-@click.option("-o", "--output", default="report", show_default=True,
-              help="Directory to write the report into.")
-@click.option("--bin-dir", default=None,
-              help="Directory holding the LLVM tools (else LLVM_LENS_BIN_DIR / PATH).")
-@click.option("--timeout", type=float, default=60.0, show_default=True,
-              help="Per-tool invocation timeout in seconds.")
-@click.option("--source-map/--no-source-map", default=True, show_default=True,
-              help="Correlate IR/MIR lines with the original source (needs debug "
-                   "info; costs one extra opt and llc run).")
-def main(
-    source: str,
-    passes: str,
-    load_pass_plugins: tuple[str, ...],
-    load: tuple[str, ...],
-    custom_passes: tuple[str, ...],
-    mtriple: str | None,
-    output: str,
-    bin_dir: str | None,
-    timeout: float,
-    source_map: bool,
-) -> None:
-    """Analyze LLVM pass pipelines and emit a static HTML report.
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="llvm-pass-analyzer",
+        description=(
+            "Analyze LLVM pass pipelines and emit a static HTML report. "
+            "Accepts .c/.cpp (compiled with clang), .ll, and .bc sources. "
+            "Lane A runs the opt middle-end pipeline; Lane B runs the llc "
+            "backend; the report is a browsable HTML report in --output."
+        ),
+    )
+    parser.add_argument("source", help="Source file to analyze (.c/.cpp/.ll/.bc).")
+    parser.add_argument("--passes", default=DEFAULT_PASSES,
+                        help="New-PM pipeline string for opt (Lane A).  [default: %(default)s]")
+    parser.add_argument("--load-pass-plugin", dest="load_pass_plugins",
+                        action="append", default=[], metavar="SO",
+                        help="New-PM pass plugin .so to load (opt + llc, repeatable).")
+    parser.add_argument("--load", dest="load", action="append", default=[],
+                        metavar="SO",
+                        help="Legacy plugin .so to load (llc backend only, repeatable).")
+    parser.add_argument("--custom-pass", dest="custom_passes", action="append",
+                        default=[], metavar="NAME",
+                        help="Custom function-pass name to append (as function(<name>)) "
+                             "and badge (repeatable).")
+    parser.add_argument("-o", "--output", default="report",
+                        help="Directory to write the report into.  [default: %(default)s]")
+    parser.add_argument("--bin-dir", default=None,
+                        help="Directory holding the LLVM tools (else LLVM_LENS_BIN_DIR / PATH).")
+    parser.add_argument("--llvm-version", type=int, default=None,
+                        metavar="MAJOR",
+                        help="Expected LLVM major version. Drives the PATH search "
+                             "(clang-<MAJOR>) and every tool must report it. The "
+                             "parsers target LLVM %(default)s output formats, so "
+                             "another major is a porting exercise, not a config "
+                             "switch.  [default: %(default)s]")
+    parser.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                        help="Per-tool invocation timeout. Off by default: a big "
+                             "module under default<O2> is slow rather than hung, "
+                             "and a wall clock that fires mid-pipeline yields a "
+                             "partial report that reads like a compiler bug.")
+    parser.add_argument("--no-source-map", dest="source_map", action="store_false",
+                        default=True,
+                        help="Correlate IR/MIR lines with the original source (needs "
+                             "debug info; costs one extra opt and llc run).  "
+                             "[default: on]")
+    return parser
 
-    Accepts .c/.cpp (compiled with clang), .ll, and .bc sources. Lane A runs
-    the opt middle-end pipeline; Lane B runs the llc backend; the report is a
-    browsable HTML report in --output.
-    """
+
+def main(argv: list[str] | None = None) -> None:
+    """Analyze LLVM pass pipelines and emit a static HTML report."""
+    parser = _parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    args = parser.parse_args(argv)
+
+    source = Path(args.source)
+    if not source.is_file():
+        parser.error(f"argument source: {args.source!r} is not an existing file")
+
     try:
         summary = build_report(
             source,
-            passes=passes,
-            load_pass_plugins=tuple(load_pass_plugins),
-            load=tuple(load),
-            custom_passes=tuple(custom_passes),
-            mtriple=mtriple,
-            output=output,
-            bin_dir=bin_dir,
-            timeout=timeout,
-            source_map=source_map,
+            passes=args.passes,
+            load_pass_plugins=tuple(args.load_pass_plugins),
+            load=tuple(args.load),
+            custom_passes=tuple(args.custom_passes),
+            output=args.output,
+            bin_dir=args.bin_dir,
+            llvm_version=args.llvm_version,
+            timeout=args.timeout,
+            source_map=args.source_map,
         )
-    except (click.ClickException,):
-        raise
     except Exception as exc:
-        raise click.ClickException(str(exc)) from exc
+        raise SystemExit(f"error: {exc}") from exc
 
-    click.echo(f"report:     {summary['reportDir']}/")
-    click.echo(f"manifest:   {summary['manifest']}")
-    click.echo(f"passes:     {summary['laneACount']} IR, {summary['laneBCount']} machine")
-    click.echo(f"total time: {summary['totalTimeMs']:g} ms")
+    print(f"report:     {summary['reportDir']}/")
+    print(f"manifest:   {summary['manifest']}")
+    print(f"passes:     {summary['laneACount']} IR, {summary['laneBCount']} machine")
+    print(f"total time: {summary['totalTimeMs']:g} ms")
     if summary["optCrashed"]:
-        click.echo("warning: opt failed/timed out; report is partial", err=True)
+        print("warning: opt failed/timed out; report is partial", file=sys.stderr)
     if summary["llcCrashed"]:
-        click.echo("warning: llc failed/timed out; report is partial", err=True)
+        print("warning: llc failed/timed out; report is partial", file=sys.stderr)
 
 
 if __name__ == "__main__":
