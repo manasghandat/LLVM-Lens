@@ -12,17 +12,13 @@ from cli.parsers.print_changed import (
 )
 from cli.parsers.time_passes import parse_time_passes
 
-FIXTURES = Path(__file__).parent / "fixtures"
-OPT_STDERR = (FIXTURES / "opt-sample.stderr").read_text()
-LLC_STDERR = (FIXTURES / "llc-sample.stderr").read_text()
-LLC_CARRY = (FIXTURES / "llc-carry.stderr").read_text()
 
 
 # --- print_changed ----------------------------------------------------------
 
 
-def test_parse_changed_ir_headers():
-    snapshots = parse_changed_ir(OPT_STDERR)
+def test_parse_changed_ir_headers(capture):
+    snapshots = parse_changed_ir(capture("opt-sample.stderr"))
     assert snapshots
     assert snapshots[0].pass_name == "SimplifyCFGPass"
     assert snapshots[0].function == "main"
@@ -33,8 +29,8 @@ def test_parse_changed_ir_headers():
     assert {"main", "square"} <= functions
 
 
-def test_parse_changed_ir_adjacent_snapshots_do_not_leak():
-    snapshots = parse_changed_ir(OPT_STDERR)
+def test_parse_changed_ir_adjacent_snapshots_do_not_leak(capture):
+    snapshots = parse_changed_ir(capture("opt-sample.stderr"))
     for first, second in zip(snapshots, snapshots[1:]):
         assert second.ir != first.ir  # bodies are split at headers
     # first snapshot's body must not contain the second header
@@ -174,8 +170,8 @@ def test_split_module_functions_round_trips_a_function_dump():
 # --- debug_pass_manager ------------------------------------------------------
 
 
-def test_parse_pass_runs_fixture():
-    runs = parse_pass_runs(OPT_STDERR)
+def test_parse_pass_runs_fixture(capture):
+    runs = parse_pass_runs(capture("opt-sample.stderr"))
     assert runs
     assert runs[0].name == "MemProfRemoveInfo"
     assert runs[0].function == "[module]"
@@ -200,8 +196,8 @@ def test_parse_pass_runs_analysis_attribution():
     assert [e.name for e in runs[1].invalidated] == ["DomTree"]
 
 
-def test_parse_pass_runs_has_analyses():
-    runs = parse_pass_runs(OPT_STDERR)
+def test_parse_pass_runs_has_analyses(capture):
+    runs = parse_pass_runs(capture("opt-sample.stderr"))
     assert any(r.analyses for r in runs)
     assert any(r.invalidated for r in runs)
 
@@ -209,8 +205,8 @@ def test_parse_pass_runs_has_analyses():
 # --- time_passes --------------------------------------------------------------
 
 
-def test_parse_time_passes_blocks():
-    blocks = parse_time_passes(OPT_STDERR)
+def test_parse_time_passes_blocks(capture):
+    blocks = parse_time_passes(capture("opt-sample.stderr"))
     assert blocks
     assert all(b.total_seconds > 0 for b in blocks)
     assert any(not b.is_summary for b in blocks)
@@ -222,8 +218,8 @@ def test_parse_time_passes_blocks():
 # --- legacy_pass_structure ------------------------------------------------------
 
 
-def test_parse_pass_structure_fixture():
-    nodes, pass_arguments = parse_pass_structure(LLC_STDERR)
+def test_parse_pass_structure_fixture(capture):
+    nodes, pass_arguments = parse_pass_structure(capture("llc-sample.stderr"))
     assert nodes
     assert pass_arguments and "-x86-isel" in pass_arguments
     by_name = {n.name: n for n in nodes}
@@ -237,8 +233,8 @@ def test_parse_pass_structure_fixture():
 # --- mir -----------------------------------------------------------------------
 
 
-def test_parse_mir_snapshots_sample():
-    snapshots = parse_mir_snapshots(LLC_STDERR)
+def test_parse_mir_snapshots_sample(capture):
+    snapshots = parse_mir_snapshots(capture("llc-sample.stderr"))
     assert snapshots
     pass_ids = [s.pass_id for s in snapshots]
     for expected in ("x86-isel", "greedy", "virtregrewriter", "x86-asm-printer"):
@@ -256,8 +252,8 @@ def test_parse_mir_snapshots_sample():
     assert {"main", "square"} <= {f for s in snapshots for f in s.functions}
 
 
-def test_parse_mir_spills_carried_values():
-    snapshots = parse_mir_snapshots(LLC_CARRY)
+def test_parse_mir_spills_carried_values(capture):
+    snapshots = parse_mir_snapshots(capture("llc-carry.stderr"))
     spill_passes = [s for s in snapshots if any(f.spill_count for f in s.functions.values())]
     assert spill_passes, "expected spill candidates in carry fixture"
     kinds = {kind for s in spill_passes for f in s.functions.values() for kind, _ in f.spills}
@@ -265,8 +261,8 @@ def test_parse_mir_spills_carried_values():
     assert "reload" in kinds
 
 
-def test_vreg_to_physreg_around_rewriter():
-    snapshots = parse_mir_snapshots(LLC_CARRY)
+def test_vreg_to_physreg_around_rewriter(capture):
+    snapshots = parse_mir_snapshots(capture("llc-carry.stderr"))
     rewriter_index = next(
         i for i, s in enumerate(snapshots) if s.pass_id == "virtregrewriter"
     )

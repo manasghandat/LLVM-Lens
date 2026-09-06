@@ -6,15 +6,13 @@ exactly what `opt -print-module-scope` and `llc -stop-after` print on LLVM 22.
 
 from __future__ import annotations
 
-from cli.main import _join_ir_tables
-from cli.parsers.print_changed import IrSnapshot
+from cli.parsers.print_changed import parse_changed_ir
 from cli.sourcemap import (
     MIR_REF_RE,
     SourceRef,
     encode,
     has_debug_info,
     map_lines,
-    module_scope_dumps,
     parse_debug_table,
 )
 
@@ -92,50 +90,52 @@ def test_encode_indexes_files_and_drops_unknown_ones():
     assert encode(mapping, files) == [[1, 9], None, None]
 
 
+# What opt prints under -print-changed=quiet -print-module-scope: the header
+# still names the function the pass ran on, the body is the whole module, and
+# the metadata that resolves this dump's `!dbg` follows the function.
 MODULE_SCOPE_LOG = """\
 *** IR Dump After SROAPass on getTime ***
-define i64 @getTime() {
-  ret i64 0
+; ModuleID = 'sample.ll'
+source_filename = "sample.c"
+define i64 @getTime() !dbg !10 {
+  ret i64 0, !dbg !30
 }
 !0 = !DIFile(filename: "sample.c", directory: "/repo")
+!10 = distinct !DISubprogram(name: "getTime", file: !0, line: 12)
+!30 = !DILocation(line: 14, column: 3, scope: !10)
 Running pass: SimplifyCFGPass on main
 *** IR Dump After SimplifyCFGPass on main ***
+; ModuleID = 'sample.ll'
 define i32 @main() {
   ret i32 0
 }
 """
 
 
-def test_module_scope_dumps_keep_whole_modules():
-    dumps = module_scope_dumps(MODULE_SCOPE_LOG)
-    assert [(name, fn) for name, fn, _ in dumps] == [
+def test_a_module_scope_dump_carries_the_table_that_resolves_it():
+    # The point of printing at module scope: no second opt run is needed,
+    # because each snapshot arrives with the metadata that resolves its own
+    # `!dbg` references -- and the body must therefore not stop at the
+    # function's "}", which the table follows.
+    dumps = parse_changed_ir(MODULE_SCOPE_LOG)
+    assert [(d.pass_name, d.function) for d in dumps] == [
         ("SROAPass", "getTime"), ("SimplifyCFGPass", "main"),
     ]
-    # The body must not stop at the function's "}" — the metadata table that
-    # follows it is the whole point of the module-scope capture.
-    assert "!DIFile" in dumps[0][2]
-    assert "Running pass:" not in dumps[0][2]
+    assert "!DIFile" in dumps[0].metadata
+    assert "Running pass:" not in dumps[0].metadata
+    # The metadata is out of the code half but still paired with it.
+    assert "!DIFile" not in dumps[0].ir
+    assert map_lines(dumps[0].ir, parse_debug_table(dumps[0].metadata)) == [
+        SourceRef("/repo/sample.c", 12),   # define ... !dbg !10
+        SourceRef("/repo/sample.c", 14),   # ret ... !dbg !30
+        None,                              # closing brace
+    ]
+    # The bookkeeping half is everything the report drops, the preamble
+    # included; a module with no debug graph in it yields an empty table
+    # rather than an error.
+    assert parse_debug_table(dumps[1].metadata) == {}
 
 
 def test_has_debug_info():
     assert has_debug_info(MODULE)
     assert not has_debug_info("define i32 @main() {\n  ret i32 0\n}\n")
-
-
-def _snapshot(pass_name, function):
-    return IrSnapshot(pass_name, function, "")
-
-
-def test_join_ir_tables_pairs_dumps_by_position():
-    dumps = [_snapshot("A", "f"), _snapshot("B", "g")]
-    tables = [("A", "f", {1: SourceRef("x", 1)}), ("B", "g", {})]
-    assert _join_ir_tables(dumps, tables) == [{1: SourceRef("x", 1)}, {}]
-
-
-def test_join_ir_tables_drops_a_harvest_that_diverged():
-    # A harvest that ran a different pipeline would silently shift every
-    # mapping by one; dropping it entirely is the only safe answer.
-    dumps = [_snapshot("A", "f"), _snapshot("B", "g")]
-    assert _join_ir_tables(dumps, [("A", "f", {}), ("C", "g", {})]) == [None, None]
-    assert _join_ir_tables(dumps, [("A", "f", {})]) == [None, None]
-    assert _join_ir_tables(dumps, None) == [None, None]

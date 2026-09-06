@@ -12,11 +12,11 @@ from cli.main import (
     BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
     build_commands, build_input_pass, build_lane_a, build_lane_b, build_report,
 )
+from cli.parsers.print_changed import strip_module_noise
+from cli.sourcemap import SourceRef
+from tests.conftest import SAMPLE_C
 
-FIXTURES = Path(__file__).parent / "fixtures"
 FRONTEND = Path(__file__).parent.parent / "frontend"
-OPT_STDERR = (FIXTURES / "opt-sample.stderr").read_text()
-LLC_CARRY = (FIXTURES / "llc-carry.stderr").read_text()
 
 
 def _passes_fixture() -> list[ReportPass]:
@@ -159,8 +159,8 @@ def test_emit_report_serializes_is_custom(tmp_path):
 # --- lane builders (fixture-based, no toolchain) --------------------------------
 
 
-def test_build_lane_a_on_fixture():
-    passes = build_lane_a(OPT_STDERR)
+def test_build_lane_a_on_fixture(capture):
+    passes = build_lane_a(capture("opt-sample.stderr"))
     assert passes
     assert all(p.lane == "ir" for p in passes)
     names = [p.name for p in passes]
@@ -319,9 +319,97 @@ def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():
     )
     assert set(multi[0].functions) == {"(a, b)"}
 
-def test_build_lane_a_marks_custom():
+
+# One module, printed at every dump because the runner passes
+# -print-module-scope. The header still names the entity the pass ran on.
+MODULE_SCOPE = """\
+; ModuleID = 'sample.ll'
+source_filename = "sample.c"
+define i32 @a() {
+  ret i32 %v
+}
+
+define i32 @b() {
+  ret i32 2
+}
+
+!llvm.module.flags = !{}
+!0 = !DIFile(filename: "sample.c", directory: "/repo")
+"""
+
+
+def _module_scope_dump(pass_name: str, entity: str, value: str) -> str:
+    return (
+        f"Running pass: {pass_name} on {entity}\n"
+        f"*** IR Dump After {pass_name} on {entity} ***\n"
+        + MODULE_SCOPE.replace("%v", value)
+    )
+
+
+SEED_MODULE = strip_module_noise(MODULE_SCOPE.replace("%v", "0").splitlines())
+
+
+def test_build_lane_a_carves_the_named_entity_out_of_a_module_scope_dump():
+    # Every dump is a whole module, so a function's card must show that
+    # function -- not the module, and not a body truncated at the first "}".
+    passes = build_lane_a(
+        _module_scope_dump("SROAPass", "a", "1")
+        + _module_scope_dump("InstCombinePass", "[module]", "3"),
+        input_ir=SEED_MODULE,
+    )
+    sroa = next(p for p in passes if p.name == "SROAPass")
+    assert set(sroa.functions) == {"a", "b"}
+    assert sroa.functions["a"].before == "define i32 @a() {\n  ret i32 0\n}"
+    assert sroa.functions["a"].after == "define i32 @a() {\n  ret i32 1\n}"
+    # b was not what the pass ran on, so it is listed unchanged, not omitted.
+    assert not sroa.functions["b"].changed
+    # The module card still gets the whole module, bookkeeping stripped.
+    combine = next(p for p in passes if p.name == "InstCombinePass")
+    module = combine.functions["[module]"].after
+    assert "define i32 @a()" in module and "define i32 @b()" in module
+    assert "!DIFile" not in module and "ModuleID" not in module
+
+
+def test_build_lane_a_folds_loop_dumps_into_the_function_they_run_in():
+    # A loop pass names its dump after the loop, which is not an entity the
+    # report tracks -- and under module scope the body is the whole module
+    # anyway. Folding it onto the containing function gives the card a real
+    # before/after instead of a fragment with nothing to diff against.
+    passes = build_lane_a(
+        _module_scope_dump("SROAPass", "a", "1")
+        + _module_scope_dump("LoopRotatePass", "loop %h in function a", "2"),
+        input_ir=SEED_MODULE,
+    )
+    rotate = next(p for p in passes if p.name == "LoopRotatePass")
+    assert set(rotate.functions) == {"a", "b"}  # no "loop %h in function a"
+    change = rotate.functions["a"]
+    assert change.changed
+    assert change.before == "define i32 @a() {\n  ret i32 1\n}"
+    assert change.after == "define i32 @a() {\n  ret i32 2\n}"
+
+
+def test_build_lane_a_maps_source_off_each_dump_s_own_metadata():
+    # The mapping needs no second opt run: a module-scope dump defines the
+    # !N it references, so the table is read off the very text the snapshot
+    # was cut from.
+    stderr = (
+        "Running pass: SROAPass on a\n"
+        "*** IR Dump After SROAPass on a ***\n"
+        "; ModuleID = 'sample.ll'\n"
+        "define i32 @a() {\n"
+        "  ret i32 1, !dbg !7\n"
+        "}\n"
+        "!7 = !DILocation(line: 42, column: 3, scope: !8)\n"
+        "!8 = distinct !DISubprogram(name: \"a\", file: !9, line: 40)\n"
+        "!9 = !DIFile(filename: \"sample.c\", directory: \"/repo\")\n"
+    )
+    mapped = build_lane_a(stderr)[0].src_maps["a"]
+    assert [None, SourceRef("/repo/sample.c", 42), None] == mapped
+    assert build_lane_a(stderr, mapped=False)[0].src_maps == {}
+
+def test_build_lane_a_marks_custom(capture):
     # --custom-pass matches case-insensitively; only the named pass is flagged.
-    passes = build_lane_a(OPT_STDERR, custom_passes=("sroapass",))
+    passes = build_lane_a(capture("opt-sample.stderr"), custom_passes=("sroapass",))
     sroa = next(p for p in passes if p.name == "SROAPass")
     assert sroa.is_custom
     assert all(not p.is_custom for p in passes if p.name != "SROAPass")
@@ -412,8 +500,8 @@ def test_effective_pipeline_appends_function_passes():
     assert _effective_pipeline("mem2reg,mba-add", ("mba-add",)) == "mem2reg,mba-add"
 
 
-def test_build_lane_b_on_fixture():
-    passes = build_lane_b(LLC_CARRY, asm_text="main:\n  ret\n")
+def test_build_lane_b_on_fixture(capture):
+    passes = build_lane_b(capture("llc-carry.stderr"), asm_text="main:\n  ret\n")
     assert passes
     assert all(p.lane == "mir" for p in passes)
     assert passes[-1].pass_id == "x86-asm-printer"
@@ -459,7 +547,7 @@ def test_build_commands_omits_a_stage_that_never_ran():
 
 def test_build_report_end_to_end(toolchain, tmp_path):
     summary = build_report(
-        FIXTURES / "sample.c",
+        SAMPLE_C,
         passes="mem2reg",
         output=tmp_path / "report",
         bin_dir=toolchain.bin_dir,

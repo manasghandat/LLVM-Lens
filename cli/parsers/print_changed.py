@@ -3,11 +3,24 @@
 Dump format (opt, LLVM 22):
 
     *** IR Dump After <PassName> on <Function> ***
-    <function IR ...>
+    ; ModuleID = 'sample.ll'
+    <whole module ...>
 
-Only functions a pass actually changed are printed (quiet mode), so a pass
-absent from this list did not modify that function. Snapshots are per
-(pass, function); pairing into before/after changes is diff.py's job.
+Only entities a pass actually changed are printed (quiet mode), so a pass
+absent from this list did not modify that function. The header still names the
+entity the pass ran on -- a function, ``[module]``, an SCC, a loop -- but the
+body is the whole module, because the runner passes ``-print-module-scope``:
+a bare function dump references ``!dbg !N`` without defining it, and opt
+renumbers metadata as passes drop it, so a function-scope capture cannot be
+correlated with source without a second, module-scope run of the same
+pipeline. Printing at module scope once is cheaper than running opt twice, and
+it cannot drift from the run it describes. Carving the header's entity back
+out of the module is main.py's job (``_entity_text``); pairing snapshots into
+before/after changes is diff.py's.
+
+Bodies from before that change -- an older report, a hand-written fixture --
+still parse: a dump that does not open on the module preamble is read as the
+bare function it is.
 """
 
 from __future__ import annotations
@@ -38,6 +51,11 @@ MODULE_NOISE_RE = re.compile(
     r"^(?:; ModuleID = |source_filename = |target (?:datalayout|triple) = |!)"
 )
 
+# Whatever entity the header names, a -print-module-scope body opens on the
+# module preamble. That is what tells a whole module apart from a bare function
+# dump, and only the latter ends at a closing brace.
+MODULE_PREAMBLE_RE = re.compile(r"^; ModuleID = ")
+
 # "define dso_local i64 @getTime(ptr noundef %0) #0 !dbg !49 {" -- the name is
 # the first `@thing(` on the line; quoted names ("foo bar") are legal too.
 DEFINE_RE = re.compile(r'^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$\-]+)\s*\(')
@@ -47,7 +65,11 @@ DEFINE_RE = re.compile(r'^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$\-]+)\s*\(')
 class IrSnapshot:
     pass_name: str
     function: str
-    ir: str  # raw function/module text following the header
+    ir: str  # dump body, module bookkeeping removed
+    # The bookkeeping that was removed, kept only for its `!N = !DI...` nodes:
+    # they are the table that maps this snapshot's `!dbg !N` back to source.
+    # Empty for a dump that carried none (no -g, or a bare function dump).
+    metadata: str = ""
 
     @property
     def text(self) -> str:
@@ -58,25 +80,31 @@ class IrSnapshot:
 def parse_changed_ir(stderr: str) -> list[IrSnapshot]:
     """Parse a -print-changed=quiet stderr stream into ordered snapshots.
 
-    Function-level dumps end at the closing ``}``: opt interleaves
-    -debug-pass-manager output ("Running pass/analysis: …") right after it,
-    and those lines must not become part of the function text (the CFG and
-    diff views would show them as block content). Module dumps (``on
-    [module]``) have no reliable terminator, so their body runs to the next
-    header; log noise is filtered out in either case.
+    A whole module has no reliable terminator -- and under
+    ``-print-module-scope`` every dump is one -- so a body runs to the next
+    header. A bare function dump instead ends at its closing ``}``: opt
+    interleaves -debug-pass-manager output ("Running pass/analysis: …") right
+    after it, and those lines must not become part of the function text (the
+    CFG and diff views would show them as block content). The two are told
+    apart by the body itself, not by the header, because a module-scope dump
+    is headed by whichever entity the pass ran on. Log noise is filtered out
+    either way.
     """
     snapshots: list[IrSnapshot] = []
     pass_name: str | None = None
     function: str = ""
     body: list[str] = []
+    module_scope: bool = False
 
     def finish() -> None:
-        nonlocal pass_name, function, body
+        nonlocal pass_name, function, body, module_scope
         if pass_name is not None:
-            snapshots.append(IrSnapshot(pass_name, function, strip_module_noise(body)))
+            code, metadata = split_module_noise(body)
+            snapshots.append(IrSnapshot(pass_name, function, code, metadata))
         pass_name = None
         function = ""
         body = []
+        module_scope = False
 
     for line in stderr.splitlines():
         match = HEADER_RE.match(line)
@@ -87,32 +115,49 @@ def parse_changed_ir(stderr: str) -> list[IrSnapshot]:
             continue
         if pass_name is None or NOISE_RE.match(line):
             continue
+        if not body and MODULE_PREAMBLE_RE.match(line):
+            module_scope = True
         body.append(line)
-        # Function-level dump: the closing brace ends the snapshot.
-        if line.strip() == "}" and not function.startswith("["):
+        # Bare function dump: the closing brace ends the snapshot.
+        if line.strip() == "}" and not module_scope and not function.startswith("["):
             finish()
     finish()
     return snapshots
 
 
-def strip_module_noise(lines: list[str]) -> str:
-    """Join a dump body, dropping the module preamble and metadata block.
+def split_module_noise(lines: list[str]) -> tuple[str, str]:
+    """Separate a dump body into (code, module bookkeeping).
 
-    The blank runs the removals leave behind collapse to one and trailing
-    blanks go, so a stripped module reads as one continuous listing rather
-    than as gaps where the metadata used to be. Function-level dumps and
-    Machine IR carry neither block and pass through unchanged.
+    The bookkeeping half never reaches the report, but it is not thrown away
+    at the point of removal: its ``!N = !DI...`` nodes are exactly the table
+    that resolves the code half's ``!dbg !N`` references back to source lines,
+    and this is the last place the two are still known to belong together.
+
+    In the code half, the blank runs the removals leave behind collapse to one
+    and trailing blanks go, so a stripped module reads as one continuous
+    listing rather than as gaps where the metadata used to be. Bare function
+    dumps and Machine IR carry neither block and pass through unchanged, with
+    nothing in the bookkeeping half.
     """
     kept: list[str] = []
+    noise: list[str] = []
     for line in lines:
         if MODULE_NOISE_RE.match(line):
+            noise.append(line)
             continue
         if not line.strip() and (not kept or not kept[-1].strip()):
             continue
         kept.append(line)
     while kept and not kept[-1].strip():
         kept.pop()
-    return "\n".join(kept)
+    return "\n".join(kept), "\n".join(noise)
+
+
+def strip_module_noise(lines: list[str]) -> str:
+    """The code half of :func:`split_module_noise`, for callers with no use
+    for the metadata (the input cards, which read their table off the module
+    they were handed)."""
+    return split_module_noise(lines)[0]
 
 
 def split_module_functions(module_text: str) -> dict[str, str]:

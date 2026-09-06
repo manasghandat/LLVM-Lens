@@ -8,18 +8,17 @@ metadata as passes drop it, so no single table serves the whole pipeline: the
 same ``ret i32 0`` is ``!dbg !237`` after SimplifyCFG, ``!212`` after SROA and
 ``!180`` from GVN onwards.
 
-Two harvests fix that, both self-describing:
+Each lane answers that differently:
 
-  Lane A  a second opt run with the same pipeline plus ``-print-module-scope``.
-          Its dump sequence is header-for-header identical to the main run's,
-          and the function bodies inside are byte-identical (same slot
-          numbering), so dump *k*'s module carries exactly the table that
-          resolves snapshot *k*.
+  Lane A  nothing to harvest. opt runs under ``-print-module-scope``, so every
+          dump defines the ``!N`` it references and carries its own table --
+          read off the very text the snapshot was cut from, which is the one
+          thing a separate run can never guarantee.
   Lane B  one ``llc -stop-after=finalize-isel``, whose MIR output embeds the
           module and its metadata. llc never renumbers mid-backend, so that one
           table resolves every machine pass.
 
-Both are skipped when the input carries no debug info, and a failed harvest
+The harvest is skipped when the input carries no debug info, and a failed one
 degrades to "no mapping" rather than an error: source correlation is an
 enrichment, never a precondition for the report.
 
@@ -43,10 +42,6 @@ from pathlib import Path
 from .proc import ProcError, run_capture
 from .toolchain import Toolchain
 
-# "*** IR Dump After SimplifyCFGPass on main ***" -- same header at either scope.
-HEADER_RE = re.compile(r"^\*\*\* IR Dump After (.+?) on (.+) \*\*\*$")
-# -debug-pass-manager chatter interleaved with the dumps; never IR.
-NOISE_RE = re.compile(r"^(?:Running (?:pass|analysis)|Invalidating analysis):")
 # "!180 = distinct !DILocation(line: 77, ...)"; MIR indents its embedded module.
 NODE_RE = re.compile(r"^\s*!(\d+) = (?:distinct )?!(\w+)\((.*)\)\s*$")
 FIELD_RE = re.compile(r"\b(\w+): (?:!(\d+)|(\d+)|\"((?:[^\"\\]|\\.)*)\")")
@@ -164,26 +159,6 @@ def parse_debug_table(module_text: str) -> DebugTable:
     return table
 
 
-def module_scope_dumps(stderr: str) -> list[tuple[str, str, str]]:
-    """Split a ``-print-module-scope`` capture into (pass, function, module).
-
-    Unlike parsers/print_changed.py this never ends a body at ``}``: every
-    dump here is a whole module, so bodies run to the next header.
-    """
-    dumps: list[tuple[str, str, list[str]]] = []
-    current: list[str] | None = None
-    for line in stderr.splitlines():
-        match = HEADER_RE.match(line)
-        if match:
-            current = []
-            dumps.append((match.group(1), match.group(2), current))
-            continue
-        if current is None or NOISE_RE.match(line):
-            continue
-        current.append(line)
-    return [(name, function, "\n".join(body)) for name, function, body in dumps]
-
-
 def map_lines(text: str, table: DebugTable, ref_re: re.Pattern[str] = IR_REF_RE) -> LineMap:
     """Resolve every line of a snapshot to its source location (None if any)."""
     mapping: LineMap = []
@@ -198,41 +173,7 @@ def has_debug_info(ir_text: str) -> bool:
     return "!DILocation(" in ir_text
 
 
-# --- harvests -----------------------------------------------------------------
-
-
-def harvest_ir_tables(
-    input_ir: str | Path,
-    passes: str,
-    toolchain: Toolchain,
-    load_pass_plugins: tuple[str, ...] = (),
-    print_after: tuple[str, ...] = (),
-    timeout: float | None = None,
-) -> list[tuple[str, str, DebugTable]]:
-    """Re-run opt at module scope; return (pass, function, table) per dump.
-
-    The pipeline must match the main run exactly or the dump sequences stop
-    lining up -- the caller joins them by position and verifies the headers.
-    Returns ``[]`` on any failure: no mapping beats a wrong one.
-    """
-    from .runner_opt import opt_command  # local: avoids an import cycle
-
-    cmd = opt_command(
-        toolchain.opt.path, Path(input_ir), passes,
-        out=Path("/dev/null"),
-        load_pass_plugins=load_pass_plugins, print_after=print_after,
-        extra_args=("-print-module-scope",),
-    )
-    try:
-        result = run_capture(cmd, timeout)
-    except ProcError:
-        return []
-    if result.timed_out:
-        return []
-    return [
-        (name, function, parse_debug_table(module))
-        for name, function, module in module_scope_dumps(result.stderr)
-    ]
+# --- backend harvest ----------------------------------------------------------
 
 
 def harvest_mir_table(

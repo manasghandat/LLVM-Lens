@@ -8,8 +8,6 @@ import pytest
 
 from cli.runner_llc import LlcError, llc_command, run_llc
 
-FIXTURES = Path(__file__).parent / "fixtures"
-OPT_FINAL = FIXTURES / "opt-final-sample.ll"
 
 
 def test_llc_command_flags(tmp_path):
@@ -47,8 +45,8 @@ def test_llc_command_no_s_flag():  # llc emits asm by default; -S is an error
     assert "-S" not in cmd
 
 
-def test_run_llc_success(toolchain, tmp_path):
-    result = run_llc(OPT_FINAL, out_dir=tmp_path, toolchain=toolchain)
+def test_run_llc_success(toolchain, sample_ir, tmp_path):
+    result = run_llc(sample_ir, out_dir=tmp_path, toolchain=toolchain)
     assert not result.failed
     assert result.returncode == 0
     assert result.asm_path == tmp_path / "final.s"
@@ -63,17 +61,17 @@ def test_run_llc_success(toolchain, tmp_path):
 
 
 
-def test_run_llc_bad_flag_fails(toolchain, tmp_path):
+def test_run_llc_bad_flag_fails(toolchain, sample_ir, tmp_path):
     result = run_llc(
-        OPT_FINAL, out_dir=tmp_path,
+        sample_ir, out_dir=tmp_path,
         extra_args=("-no-such-flag-xyz",), toolchain=toolchain,
     )
     assert result.failed
     assert result.asm_path is None
 
 
-def test_run_llc_timeout(toolchain, tmp_path):
-    result = run_llc(OPT_FINAL, out_dir=tmp_path, timeout=1e-6, toolchain=toolchain)
+def test_run_llc_timeout(toolchain, sample_ir, tmp_path):
+    result = run_llc(sample_ir, out_dir=tmp_path, timeout=1e-6, toolchain=toolchain)
     assert result.timed_out
     assert result.failed
 

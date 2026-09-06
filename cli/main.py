@@ -41,8 +41,8 @@ from .parsers.time_passes import parse_time_passes
 from .runner_llc import LlcResult, run_llc
 from .runner_opt import OptResult, run_opt
 from .sourcemap import (
-    MIR_REF_RE, DebugTable, LineMap, encode, harvest_ir_tables, harvest_mir_table,
-    has_debug_info, map_lines, parse_debug_table, read_sources,
+    MIR_REF_RE, DebugTable, LineMap, encode, harvest_mir_table, has_debug_info,
+    map_lines, parse_debug_table, read_sources,
 )
 from .toolchain import Toolchain, discover_toolchain
 
@@ -59,11 +59,16 @@ MODULE_FN = "[module]"
 # pipeline has run on it. Neither is a pass.
 INPUT_PASS_NAME = "Input IR"
 BACKEND_INPUT_PASS_NAME = "Optimized IR"
-# A CGSCC pass names its dump after the SCC -- "(main)" -- not the function.
-# A single-function SCC *is* that function, so its dumps join the function's
-# own track rather than starting a second one under a parenthesized alias.
-# A real multi-function SCC ("(a, b)") stays its own entity.
+# A CGSCC pass names its dump after the SCC -- "(main)" -- and a loop pass
+# after the loop -- "loop %x in function f" -- neither of which is an entity
+# the report tracks. A single-function SCC *is* that function, and a loop's
+# changes are changes to the function it sits in, so both join that function's
+# own track rather than starting a second one under an alias. Since every dump
+# now carries the whole module (-print-module-scope), the folded card shows a
+# real before/after of the function instead of a fragment with nothing to diff
+# against. A real multi-function SCC ("(a, b)") stays its own entity.
 SCC_FN_RE = re.compile(r"^\(([^(),]+)\)$")
+LOOP_FN_RE = re.compile(r"^loop .* in function (.+)$")
 
 # Passes opt adds for its own driver duties (input verification, and the
 # module printer behind -S). clang's pipeline never runs them, so they are
@@ -173,36 +178,41 @@ def _attribute_time_ms(
     return totals
 
 
-def _join_ir_tables(
-    dumps: list[Any],
-    tables: list[tuple[str, str, DebugTable]] | None,
-) -> list[DebugTable | None]:
-    """Line up the module-scope harvest with the main run's dumps.
-
-    Both runs execute the same pipeline, so dump *k* is the same (pass,
-    function) in both. Any divergence means the harvest is not describing this
-    run, and the whole mapping is dropped rather than shifted by one.
-    """
-    if not tables or len(tables) != len(dumps):
-        return [None] * len(dumps)
-    if any((name, function) != (d.pass_name, d.function)
-           for (name, function, _), d in zip(tables, dumps)):
-        return [None] * len(dumps)
-    return [table for _, _, table in tables]
-
-
 def _canonical_fn(name: str) -> str:
     """The entity a dump belongs to, as the report tracks it."""
-    match = SCC_FN_RE.match(name)
+    match = SCC_FN_RE.match(name) or LOOP_FN_RE.match(name)
     return match.group(1) if match else name
+
+
+def _entity_text(entity: str, body: str) -> str:
+    """The part of one dump body that belongs to *entity*.
+
+    Every dump arrives at module scope, so a function's card would otherwise
+    show the whole module. "[module]" keeps it whole; a function (or a loop
+    folded onto the function containing it) takes its own definition out of
+    it; a multi-function SCC takes its members, in the order its header names
+    them. A body that is not a module -- a bare function dump from a report
+    built before -print-module-scope, a loop fragment -- has nothing to carve
+    out and is used as it stands.
+    """
+    if entity == MODULE_FN:
+        return body
+    bodies = split_module_functions(body)
+    if not bodies:
+        return body
+    if entity.startswith("(") and entity.endswith(")"):
+        members = [name.strip() for name in entity[1:-1].split(",")]
+        chosen = [bodies[name] for name in members if name in bodies]
+        return "\n\n".join(chosen) if chosen else body
+    return bodies.get(entity, body)
 
 
 def build_lane_a(
     stderr: str,
     custom_passes: tuple[str, ...] = (),
-    ir_tables: list[tuple[str, str, DebugTable]] | None = None,
     input_ir: str | None = None,
-) -> tuple[list[ReportPass], dict[str, str]]:
+    mapped: bool = True,
+) -> list[ReportPass]:
     """Assemble Lane A (opt) passes from the captured stderr.
 
     *input_ir* is the module as it entered the pipeline (already stripped).
@@ -210,17 +220,16 @@ def build_lane_a(
     so the first pass to touch something diffs against what it actually
     received instead of against nothing.
 
-    Returns ``(passes, scope_by_name)``: the built cards and a map of each pass
-    name to its pass-manager scope (``module``/``cgscc``/``function``/``loop``),
-    inferred from the ``-debug-pass-manager`` ``on <target>`` field. The
-    hierarchical tree is built later in ``build_report`` once ids are assigned.
+    *mapped* correlates each snapshot with the source it came from. Every dump
+    is printed at module scope and so defines the ``!N`` nodes it references,
+    which is why this needs no second opt run: the table is read off the same
+    text the snapshot was cut from and cannot describe a different one.
     """
     from .parsers.debug_pass_manager import scope_of
 
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
     time_blocks = parse_time_passes(stderr)
-    joined = _join_ir_tables(dumps, ir_tables)
 
     order: list[str] = []
     first_run_lines: list[int] = []  # aligned with `order`
@@ -236,12 +245,15 @@ def build_lane_a(
     snap: dict[tuple[str, str], str] = {}
     snap_src: dict[tuple[str, str], LineMap] = {}
     fn_order: dict[str, int] = {}
-    for dump, table in zip(dumps, joined):
+    for dump in dumps:
         key = (dump.pass_name, _canonical_fn(dump.function))
-        if key not in snap and table is not None:
-            snap_src[key] = map_lines(dump.ir, table)
-        snap.setdefault(key, dump.ir)
         fn_order.setdefault(key[1], len(fn_order))
+        if key in snap:
+            continue
+        snap[key] = _entity_text(key[1], dump.ir)
+        table = parse_debug_table(dump.metadata) if mapped and dump.metadata else None
+        if table:
+            snap_src[key] = map_lines(snap[key], table)
 
     analyses: dict[str, dict[str, list[str]]] = {}
     for run in runs:
@@ -702,16 +714,7 @@ def build_report(
         timeout=timeout,
     )
     opt_stderr = opt_result.stderr_path.read_text(errors="replace")
-
-    # Source correlation needs each dump's own metadata table, which the
-    # function-scope capture does not carry -- harvest it separately. Skipped
-    # outright when the module has no debug info, so -g-less inputs pay nothing.
     input_ir = compiled.ir_path.read_text(errors="replace")
-    ir_tables = harvest_ir_tables(
-        compiled.ir_path, effective_passes, toolchain=toolchain,
-        load_pass_plugins=load_pass_plugins, print_after=custom_passes,
-        timeout=timeout,
-    ) if source_map else None
 
     # The input module leads lane A, so the report opens on what clang emitted
     # rather than on the first pass's output. It survives an opt failure.
@@ -726,9 +729,10 @@ def build_report(
     if not opt_result.timed_out:
         # Seed from the card's own text, so what the first pass diffs against
         # is byte-for-byte what the input card displays.
-        lane_a_passes, ir_scopes = build_lane_a(
-            opt_stderr, custom_passes, ir_tables,
+        lane_a += build_lane_a(
+            opt_stderr, custom_passes,
             input_ir=input_card.functions[MODULE_FN].after,
+            mapped=source_map,
         )
         lane_a += lane_a_passes
 

@@ -49,11 +49,6 @@ class CompiledSource:
     compiled_at: str  # ISO-8601 UTC timestamp
 
 
-def llvm_dis_command(llvm_dis: Path, source: Path, out: Path) -> list[str]:
-    """Build the llvm-dis invocation that turns bitcode into textual IR."""
-    return [str(llvm_dis), "-o", str(out), str(source)]
-
-
 def _run(cmd: list[str], timeout: float | None) -> None:
     """Run a subprocess; a non-zero exit or timeout is a CompileError."""
     try:

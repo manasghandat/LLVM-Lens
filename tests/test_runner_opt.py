@@ -2,30 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from cli.compile import compile_to_ir
 from cli.runner_opt import OptError, run_opt
-
-FIXTURES = Path(__file__).parent / "fixtures"
-SAMPLE_C = FIXTURES / "sample.c"
-
-
-@pytest.fixture(scope="module")
-def sample_ir(toolchain, tmp_path_factory):
-    out = tmp_path_factory.mktemp("opt-input")
-    result = compile_to_ir(SAMPLE_C, out_dir=out, toolchain=toolchain)
-    assert result.kind == "clang"
-    return result.ir_path
-
 
 # --- end-to-end against a real toolchain ------------------------------------
 
 
 def test_run_opt_success(toolchain, sample_ir, tmp_path):
-    result = run_opt(sample_ir, "mem2reg", out_dir=tmp_path, toolchain=toolchain)
+    result = run_opt(toolchain, sample_ir, "mem2reg", out_dir=tmp_path)
     assert not result.failed
     assert result.returncode == 0
     assert result.ir_path == tmp_path / "opt-final.ll"
@@ -44,10 +29,14 @@ def test_run_opt_success(toolchain, sample_ir, tmp_path):
     assert "Running pass" in stderr  # -debug-pass-manager
     assert "Running analysis" in stderr
     assert "Total Execution Time" in stderr  # -time-passes
+    # -print-module-scope: each dump is the whole module, which is what makes
+    # it self-describing enough to correlate with source in one opt run.
+    header = stderr.index("IR Dump After PromotePass on main")
+    assert stderr[header:].lstrip().splitlines()[1].startswith("; ModuleID = ")
 
 
 def test_run_opt_unknown_pass_fails(toolchain, sample_ir, tmp_path):
-    result = run_opt(sample_ir, "no-such-pass", out_dir=tmp_path, toolchain=toolchain)
+    result = run_opt(toolchain, sample_ir, "no-such-pass", out_dir=tmp_path)
     assert result.failed
     assert result.returncode != 0
     assert not result.timed_out
@@ -56,11 +45,11 @@ def test_run_opt_unknown_pass_fails(toolchain, sample_ir, tmp_path):
 
 
 def test_run_opt_timeout(toolchain, sample_ir, tmp_path):
-    result = run_opt(sample_ir, "mem2reg", out_dir=tmp_path, timeout=1e-6, toolchain=toolchain)
+    result = run_opt(toolchain, sample_ir, "mem2reg", out_dir=tmp_path, timeout=1e-6)
     assert result.timed_out
     assert result.failed
 
 
-def test_run_opt_missing_input(tmp_path):
+def test_run_opt_missing_input(toolchain, tmp_path):
     with pytest.raises(OptError, match="input IR not found"):
-        run_opt(tmp_path / "nope.ll", "mem2reg", out_dir=tmp_path)
+        run_opt(toolchain, tmp_path / "nope.ll", "mem2reg", out_dir=tmp_path)

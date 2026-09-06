@@ -1,9 +1,17 @@
 """opt invocation (new pass manager): pipeline runs, plugins, capture.
 
 Runs opt on an IR module with the instrumentation the report needs:
-  * -print-changed=quiet  -- per-pass before/after IR dumps of changed functions
+  * -print-changed=quiet  -- per-pass IR dumps, only for what a pass changed
+  * -print-module-scope   -- print the whole module at every one of those dumps
   * -debug-pass-manager   -- analyses run/cached/invalidated (new PM)
   * -time-passes          -- per-pass timing
+
+-print-module-scope costs roughly 4x the stderr (each dump is a module rather
+than one function) and buys the source correlation: a bare function dump
+references `!dbg !N` without defining it, and opt renumbers metadata as passes
+drop it, so the alternative is a second full opt run whose dump sequence has
+to be trusted to still line up with this one. It does not change what opt
+considers changed, so the dump sequence is the same either way.
 
 Unlike compile.py, a failing or timed-out opt is a *result*, not an
 exception: the report spec wants a partial report (with the crash stack trace)
@@ -50,34 +58,6 @@ class OptResult:
         return self.timed_out or self.returncode != 0
 
 
-def opt_command(
-    opt: Path,
-    input_ir: Path,
-    passes: str,
-    *,
-    out: Path,
-    load_pass_plugins: tuple[str, ...] = (),
-    print_after: tuple[str, ...] = (),
-    extra_args: tuple[str, ...] = (),
-) -> list[str]:
-    """Build the opt invocation for the Lane A pipeline.
-
-    Shared with the source-map harvest, which re-runs the same pipeline with
-    -print-module-scope: the two command lines have to agree flag for flag or
-    the harvested dump sequence stops lining up with the main run's.
-    """
-    cmd = [str(opt), "-S", f"-passes={passes}"]
-    cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
-    cmd.extend(["-print-changed=quiet", "-debug-pass-manager", "-time-passes"])
-    # -print-after takes a comma-separated list of pass names: force a dump
-    # for named custom passes even when they do not change IR (analysis passes).
-    if print_after:
-        cmd.append(f"-print-after={','.join(print_after)}")
-    cmd.extend(extra_args)
-    cmd.extend(["-o", str(out), str(input_ir)])
-    return cmd
-
-
 def run_opt(
     toolchain: Toolchain,
     input_ir: str | Path,
@@ -99,12 +79,18 @@ def run_opt(
     stdout_path = out_dir / CHANGED_LOG_NAME
     stderr_path = out_dir / STDERR_LOG_NAME
 
-    cmd = opt_command(
-        toolchain.opt.path, input_ir, passes,
-        out=final_ir,
-        load_pass_plugins=load_pass_plugins, print_after=print_after,
-        extra_args=extra_args,
-    )
+    cmd = [
+        str(toolchain.opt.path), "-S",
+        f"-passes={passes}",
+        "-print-changed=quiet", "-print-module-scope", "-debug-pass-manager",
+        "-time-passes",
+    ]
+    cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
+    # -print-after takes a comma-separated list of pass names: force a dump
+    # for named custom passes even when they do not change IR (analysis passes).
+    if print_after:
+        cmd.append(f"-print-after={','.join(print_after)}")
+    cmd.extend([*extra_args, "-o", str(final_ir), str(input_ir)])
     # A report is rebuilt over its own directory, so an earlier build's
     # opt-final.ll may already be sitting here. Drop it first, so the file
     # existing afterwards means *this* run emitted it.

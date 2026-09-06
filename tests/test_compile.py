@@ -6,46 +6,26 @@ from pathlib import Path
 
 import pytest
 
-from cli.compile import (
-    CompileError,
-    clang_ir_command,
-    compile_to_ir,
-    llvm_dis_command,
-)
-
-FIXTURES = Path(__file__).parent / "fixtures"
-SAMPLE_C = FIXTURES / "sample.c"
-
-
-# --- command construction (pure, no toolchain needed) -----------------------
-
-
-def test_clang_ir_command_flags(tmp_path):
-    cmd = clang_ir_command(
-        Path("/llvm/clang"), SAMPLE_C, tmp_path / "out.ll",
-        extra_args=("-DNDEBUG",),
-    )
-    assert cmd == [
-        "/llvm/clang", "-S", "-emit-llvm", "-O0",
-        "-Xclang", "-disable-O0-optnone",
-        "-g", "-DNDEBUG",
-        "-o", str(tmp_path / "out.ll"), str(SAMPLE_C),
-    ]
-
-
-def test_llvm_dis_command(tmp_path):
-    cmd = llvm_dis_command(Path("/llvm/llvm-dis"), Path("m.bc"), tmp_path / "m.ll")
-    assert cmd == ["/llvm/llvm-dis", "-o", str(tmp_path / "m.ll"), "m.bc"]
+from cli.compile import CompileError, compile_to_ir
+from tests.conftest import SAMPLE_C
 
 
 # --- end-to-end against a real toolchain (skips when unavailable) -----------
 
 
 def test_compile_c_to_ir(toolchain, tmp_path):
-    result = compile_to_ir(SAMPLE_C, out_dir=tmp_path, toolchain=toolchain)
+    result = compile_to_ir(SAMPLE_C, out_dir=tmp_path, toolchain=toolchain,
+                           extra_args=("-DNDEBUG",))
     assert result.kind == "clang"
     assert result.ir_path == tmp_path / "sample.ll"
-    assert result.cmd[0] == str(toolchain.clang.path)
+    # The recorded argv is what the report's command sheet shows and what a
+    # reader is invited to paste, so it is asserted exactly.
+    assert list(result.cmd) == [
+        str(toolchain.clang.path), "-S", "-emit-llvm", "-O0",
+        "-Xclang", "-disable-O0-optnone",
+        "-g", "-DNDEBUG",
+        "-o", str(tmp_path / "sample.ll"), str(SAMPLE_C),
+    ]
     assert "clang" in result.toolchain.clang.version
     text = result.ir_path.read_text()
     assert "define" in text
