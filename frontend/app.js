@@ -239,8 +239,38 @@ const IR_TOKEN_DEFS = [
 const IR_TOKEN_RES = IR_TOKEN_DEFS.map(d =>
   ({ cls: d.cls, re: new RegExp(d.re.source, "g") }));
 
+// MIR annotation noise that is not the instruction itself, stripped before
+// highlighting. The byte offset llc prints before each post-RA instruction
+// ("80B"), the resolved source-location comment LLVM appends to
+// debug-location metadata, and the predecessors comment (redundant with the
+// CFG's successors) all belong in neither a diff nor a source view. Returns
+// null for a line that should be blanked entirely -- the caller keeps the row
+// (and its line index) so the source map, keyed on the unmodified text, stays
+// aligned.
+// MIR debug/unwind pseudo-instructions and predecessor comments are not real
+// machine instructions -- the renderers drop these lines entirely (rather than
+// rendering them as blank rows) so the view stays compact. Centralized here so
+// the renderers and tests agree on what counts as display noise.
+function isMirDebugLine(line) {
+  return /^\s*(DBG_(VALUE(_LIST)?|INSTR_REF|PHI)|(frame-(setup|destroy)\s+)?CFI_INSTRUCTION|; predecessors:)/.test(line);
+}
+
+function cleanMirLine(line) {
+  // Instruction byte-offset prefix: "80B      CLFLUSH" -> "  CLFLUSH".
+  line = line.replace(/^(\d+B)\s+/, "  ");
+  // "debug-location !N; <file>:<line>:<col>" -- the source-map pane already
+  // shows that mapping, so drop the metadata ref and its resolved comment.
+  line = line.replace(/,?\s*debug-location\s+!\d+(\s*;[^;]*)?$/, "");
+  // "debug-instr-number N" is debug-only metadata that precedes debug-location;
+  // once that's gone it dangles at the end of the line -- drop it too.
+  line = line.replace(/,?\s*debug-instr-number\s+\d+/, "");
+  return line;
+}
+
 function highlightIR(text) {
   return String(text).split("\n").map(line => {
+    if (!line.trim()) return "";
+    line = cleanMirLine(line);
     if (!line.trim()) return "";
     const spans = [];
     for (const { cls, re } of IR_TOKEN_RES) {
@@ -552,8 +582,11 @@ function diffPaneHtml() {
       `<div class="cfg-empty">(${escapeHtml(STATE.fn)} unchanged — nothing to diff)</div>`);
   }
   const { ops, del, add } = diffStat(ch.before, ch.after);
+  // Debug/unwind pseudo-instructions and predecessor comments are not real
+  // machine instructions -- drop them so they don't render as blank rows.
+  const realOps = ops.filter(o => !isMirDebugLine(o.text));
   const full = STATE.diffContext === "full";
-  const hunks = diffHunks(ops, full ? Infinity : DIFF_CONTEXT);
+  const hunks = diffHunks(realOps, full ? Infinity : DIFF_CONTEXT);
   const chips = ["hunks", "full"].map(v =>
     `<button class="ptab ${v === STATE.diffContext ? "active" : ""}" data-ctx="${v}">${v}</button>`
   ).join("");
@@ -583,6 +616,9 @@ function irPaneHtml() {
   const ch = fnChange(STATE.fn);
   if (!ch) return pane("IR", "", "", '<div class="cfg-empty">(select a function)</div>');
   const { ops, del, add } = diffStat(ch.before, ch.after);
+  // Debug/unwind pseudo-instructions and predecessor comments are not real
+  // machine instructions -- drop them so they don't render as blank rows.
+  const realOps = ops.filter(o => !isMirDebugLine(o.text));
   const side = (label, mark, count, empty) => `
     <div class="irside">
       <div class="irside-head">
@@ -591,7 +627,7 @@ function irPaneHtml() {
           count ? (mark === "+" ? "+" : "−") + count : "—"}</span>
       </div>
       <div class="udiff"><div class="ubody">${
-        irSideHtml(ops, mark) || `<div class="cfg-empty">${empty}</div>`}</div></div>
+        irSideHtml(realOps, mark) || `<div class="cfg-empty">${empty}</div>`}</div></div>
     </div>`;
   const stat = ch.changed
     ? `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`
@@ -629,8 +665,14 @@ function srcPaneHtml() {
   }
   const ch = fnChange(STATE.fn);
   if (!ch) return empty("(select a function)");
-  const map = ch.srcAfter || [];
-  const lines = splitLines(ch.after);
+  const srcMap = ch.srcAfter || [];
+  const allLines = splitLines(ch.after);
+  // Debug/unwind pseudo-instructions and predecessor comments are not real
+  // machine instructions -- drop them from both the displayed lines and the
+  // source map, keeping the two arrays index-aligned so the line mapping holds.
+  const keep = allLines.map((t, i) => !isMirDebugLine(t) && i < srcMap.length);
+  const lines = allLines.filter((t, i) => keep[i]);
+  const map = srcMap.filter((r, i) => keep[i]);
   const tally = srcFileTally(map);
   if (!tally.length) {
     return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass)`);

@@ -182,6 +182,62 @@ check("ir: number", hl.includes('<span class="tok-num">1</span>'));
 check("ir: comment", hl.includes('<span class="tok-com">; comment</span>'));
 check("ir: escape safety", highlightIR('"a<b>" ; x').includes('&lt;'));
 
+// MIR annotation stripping: byte offsets, debug-location + resolved source
+// comment, and predecessors comments are display-only noise and must not
+// reach the rendered view. The cleaned instruction tokens are preserved.
+check("mir: byte offset stripped",
+      !highlightIR("80B      CLFLUSH %5:gr64").includes("80B"));
+check("mir: instruction kept after offset strip",
+      highlightIR("80B      CLFLUSH %5:gr64").includes('<span class="tok-op">CLFLUSH</span>'));
+check("mir: multi-digit offset stripped",
+      !highlightIR("224B      JMP_1 %bb.2").includes("224B"));
+check("mir: debug-location ref stripped",
+      !highlightIR("  %0 = ADD64ri32 %0, 1, debug-location !78; foo.c:30:5").includes("debug-location"));
+check("mir: resolved source comment stripped",
+      !highlightIR("  %0 = ADD64ri32 %0, 1, debug-location !78; foo.c:30:5").includes("foo.c"));
+check("mir: instruction kept after debug-location strip",
+      highlightIR("  %0 = ADD64ri32 %0, 1, debug-location !78; foo.c:30:5")
+        .includes('<span class="tok-var">%0</span>'));
+check("mir: debug-location without source comment stripped",
+      !highlightIR("  %0 = ADD64ri32 %0, 1, debug-location !78").includes("debug-location"));
+check("mir: predecessors comment filtered",
+      isMirDebugLine("    ; predecessors: %bb.1 80B 96B"));
+check("mir: plain instruction untouched",
+      highlightIR("  %5:gr64 = MOV64mr $rsp, 1, $noreg, 0, $noreg, $rax")
+        .includes('<span class="tok-var">%5</span>'));
+check("mir: ordinary semicolon comment untouched",
+      highlightIR("  %0 = ADD64ri32 %0, 1  ; some note").includes('<span class="tok-com">; some note</span>'));
+
+// Debug/unwind pseudo-instructions are whole lines of bookkeeping, not real
+// machine instructions -- the renderers drop them entirely (no blank rows).
+// debug-instr-number is a debug-only suffix that dangles once debug-location
+// is gone -- drop it too. The frame-setup prefix on a real instruction is
+// structural; only its debug-location tail is stripped.
+check("mir: DBG_VALUE filtered",
+      isMirDebugLine("  DBG_VALUE $rdi, $noreg, !\"ptr\", !DIExpression(), debug-location !59; x.c:0 line no:12"));
+check("mir: DBG_VALUE_LIST filtered",
+      isMirDebugLine("  DBG_VALUE_LIST !\"start\", !DIExpression(DW_OP_LLVM_arg, 0), $rcx, debug-location !59; x.c:0 line no:13"));
+check("mir: DBG_INSTR_REF filtered",
+      isMirDebugLine("  DBG_INSTR_REF !\"start\", !DIExpression(DW_OP_LLVM_arg, 0), dbg-instr-ref(1, 0), debug-location !59; x.c:0 line no:13"));
+check("mir: DBG_PHI filtered",
+      isMirDebugLine("  DBG_PHI $rax, 1"));
+check("mir: CFI_INSTRUCTION filtered",
+      isMirDebugLine("  frame-setup CFI_INSTRUCTION def_cfa_offset 16"));
+check("mir: bare CFI directive filtered",
+      isMirDebugLine("  CFI_INSTRUCTION offset $rbx, -32"));
+check("mir: predecessors filtered by isMirDebugLine",
+      isMirDebugLine("    ; predecessors: %bb.0"));
+check("mir: debug-instr-number stripped",
+      !highlightIR("  renamable $rbx = SUB64rr killed renamable $rbx(tied-def 0), killed renamable $rax, implicit-def dead $eflags, debug-instr-number 1, debug-location !141; x.c:37:22").includes("debug-instr-number"));
+check("mir: instruction kept after debug-instr-number strip",
+      highlightIR("  renamable $rbx = SUB64rr killed renamable $rbx(tied-def 0), killed renamable $rax, implicit-def dead $eflags, debug-instr-number 1, debug-location !141; x.c:37:22")
+        .includes('<span class="tok-var">$rbx</span>'));
+check("mir: frame-setup prefix kept on real instruction",
+      highlightIR("  frame-setup PUSH64r killed $rbp, implicit-def $rsp, implicit $rsp, debug-location !140; x.c:37:15")
+        .includes("frame-setup"));
+check("mir: frame-setup instruction debug-location stripped",
+      !highlightIR("  frame-setup PUSH64r killed $rbp, implicit-def $rsp, implicit $rsp, debug-location !140; x.c:37:15").includes("debug-location"));
+
 // C tokenizer: the Source view renders the original file beside the IR.
 const c = highlightC('  for (int i = 0; i < 0x40; i++) // loop');
 check("c: keyword", c.includes('<span class="tok-kw">for</span>'));
