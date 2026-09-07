@@ -13,6 +13,12 @@ Shape (LLVM 22, stderr):
 
 Indentation is two spaces per nesting level. The flat, ordered pass list is
 the primary output; depth keeps the nesting for display.
+
+llc prints this structure once, in full, before any pass runs; everything
+after the first ``*** IR Dump ...`` header is ``-print-after-all`` output and
+``-time-passes`` tables sharing the same stderr. Parsing has to stop there,
+because an IR dump body is all unindented text and would otherwise be read as
+several thousand depth-0 passes.
 """
 
 from __future__ import annotations
@@ -21,8 +27,8 @@ import re
 from dataclasses import dataclass
 
 PASS_ARGS_RE = re.compile(r"^Pass Arguments: ?(.*)$")
-# Two-space indentation, optional legacy "Pass: " prefix, then the name.
-PASS_LINE_RE = re.compile(r"^(?: {2})*(?:Pass: )?(.+)$")
+# First -print-after-all dump header: the end of the structure block.
+DUMP_HEADER_RE = re.compile(r"^#? ?\*\*\* IR Dump ")
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,8 @@ def parse_pass_structure(stderr: str) -> tuple[list[PassNode], str | None]:
     nodes: list[PassNode] = []
     pass_arguments: str | None = None
     for line_no, line in enumerate(stderr.splitlines(), start=1):
+        if DUMP_HEADER_RE.match(line):
+            break
         match = PASS_ARGS_RE.match(line)
         if match:
             pass_arguments = match.group(1).strip()

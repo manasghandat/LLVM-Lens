@@ -375,7 +375,7 @@ def build_lane_a(
             src_maps=src_maps,
             scope=scope_by_name.get(name),
         ))
-    return passes, scope_by_name
+    return passes
 
 
 def build_input_pass(
@@ -426,10 +426,7 @@ def _node(name: str, kind: str, *, depth: int = 0) -> dict[str, object]:
     return {"name": name, "kind": kind, "depth": depth, "passId": None, "children": []}
 
 
-def _build_ir_tree(
-    passes: list[ReportPass],
-    scope_by_name: dict[str, str],
-) -> dict[str, object]:
+def _build_ir_tree(passes: list[ReportPass]) -> dict[str, object]:
     """Build the opt (new-PM) pass-manager tree from each pass's inferred scope.
 
     The new pass manager has no nested structure dump, so the tree is synthesized
@@ -450,7 +447,7 @@ def _build_ir_tree(
     for pass_ in passes:
         if pass_.is_input:
             continue
-        scope = scope_by_name.get(pass_.name, "function")
+        scope = pass_.scope or "function"
         if scope not in sections:
             scope = "function"
         have[scope] = True
@@ -723,7 +720,6 @@ def build_report(
 
     # Raw structure data for the hierarchical pipeline tree view. Assigned for
     # real below when a lane runs; these defaults cover a timeout/crash/skip.
-    ir_scopes: dict[str, str] = {}
     mir_nodes: list[PassNode] = []
     pass_arguments: str | None = None
     if not opt_result.timed_out:
@@ -734,7 +730,6 @@ def build_report(
             input_ir=input_card.functions[MODULE_FN].after,
             mapped=source_map,
         )
-        lane_a += lane_a_passes
 
     lane_b: list[ReportPass] = []
     llc_result = None
@@ -765,7 +760,10 @@ def build_report(
                 opt_result.ir_path, toolchain=toolchain,
                 load=load, timeout=timeout,
             ) if source_map else None
-            lane_b += build_lane_b(llc_stderr, asm_text, custom_passes, mir_table)
+            lane_b_passes, mir_nodes, pass_arguments = build_lane_b(
+                llc_stderr, asm_text, custom_passes, mir_table,
+            )
+            lane_b += lane_b_passes
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
@@ -777,7 +775,7 @@ def build_report(
     # passes and IR-level passes become structural nodes with null pass id.
     mir_by_name = {p.name: p.id for p in lane_b}
     pipeline_tree = {
-        "ir": _build_ir_tree(lane_a, ir_scopes),
+        "ir": _build_ir_tree(lane_a),
         "mir": build_tree(mir_nodes, mir_by_name),
     }
 

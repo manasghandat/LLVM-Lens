@@ -501,7 +501,7 @@ def test_effective_pipeline_appends_function_passes():
 
 
 def test_build_lane_b_on_fixture(capture):
-    passes = build_lane_b(capture("llc-carry.stderr"), asm_text="main:\n  ret\n")
+    passes, _, _ = build_lane_b(capture("llc-carry.stderr"), asm_text="main:\n  ret\n")
     assert passes
     assert all(p.lane == "mir" for p in passes)
     assert passes[-1].pass_id == "x86-asm-printer"
