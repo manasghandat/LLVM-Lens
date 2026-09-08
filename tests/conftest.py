@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from cli.compile import compile_to_ir
-from cli.toolchain import ToolchainError, discover_toolchain
+from llvm_lens.compile import compile_to_ir
+from llvm_lens.toolchain import ToolchainError, discover_toolchain
 
 # The one source the integration tests compile. It doubles as the --custom-pass
 # demo input, which is why it lives under examples/ rather than in fixtures/.

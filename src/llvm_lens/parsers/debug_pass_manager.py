@@ -1,14 +1,4 @@
-"""Parse opt's ``-debug-pass-manager`` output (new pass manager).
-
-Line formats (LLVM 22):
-
-    Running pass: <Name> on <Function|module>
-    Running analysis: <Name> on <Function> (cached)?
-    Invalidating analysis: <Name> on <Function>
-
-Analyses are attributed to the pass run that was most recently started before
-them (chronological attribution; nested runs are not tracked in detail).
-"""
+"""Parse opt's -debug-pass-manager output (new pass manager)."""
 
 from __future__ import annotations
 
@@ -19,23 +9,15 @@ RUN_PASS_RE = re.compile(r"^Running pass: (\S+) on (.+)$")
 RUN_ANALYSIS_RE = re.compile(r"^Running analysis: (\S+) on (.+?)( \(cached\))?$")
 INVALIDATE_RE = re.compile(r"^Invalidating analysis: (\S+) on (.+)$")
 
-# Classify a PassRun/AnalysisEvent ``function`` field (the raw text after ``on``)
-# into the pass-manager scope it ran at. The field carries trailing metadata that
-# we tolerate via prefix matching: ``main (27 instructions)`` is still a function
-# scope, ``(square) (1 node)`` is still CGSCC.
+# Classify a function field into its pass-manager scope (prefix matching).
 _MODULE_RE = re.compile(r"^\[module\]")
 _CGSCC_RE = re.compile(r"^\(")  # "(name) (N node[s])"
-# Loop scope takes two forms across LLVM versions: LLVM 22 prints
-# "loop %id in function name"; LLVM 18 prints "<unnamed loop>". Both are
-# detected here (the latter by its leading angle bracket).
+# Loop scope: "loop %id in function name" (LLVM 22) or "<unnamed loop>" (18).
 _LOOP_RE = re.compile(r"^(loop\s+|<)")
 
 
 def scope_of(function: str) -> str:
-    """Return the pass-manager scope for a ``PassRun.function`` value.
-
-    One of ``"module"``, ``"cgscc"``, ``"loop"``, or ``"function"``.
-    """
+    """Return the pass-manager scope for a PassRun.function value."""
     f = function.strip()
     if _MODULE_RE.match(f):
         return "module"

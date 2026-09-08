@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-FRONTEND = Path(__file__).parent.parent / "frontend"
+FRONTEND = Path(__file__).parent.parent / "src" / "llvm_lens" / "frontend"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
@@ -36,7 +36,7 @@ eval(code);
 const failures = [];
 const check = (name, cond) => { if (!cond) failures.push(name); };
 
-// exact format cli/cfg.py emits: the block name in its own attribute, a
+// exact format cfg.py emits: the block name in its own attribute, a
 // truncated code label, and the full untruncated block body in code
 const coded = 'digraph {\n  rankdir="TB";\n  n0 [name="bb.0", label="%0 = MOV32rm", code="%0 = MOV32rm\\nJCC_1 %bb.1"];\n  n1 [name="bb.1"];\n  n0 -> n1;\n}';
 const cl = parseDot(coded);
@@ -260,7 +260,7 @@ console.log("frontend diff checks passed");
 MODE_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
-const start = src.indexOf("// --- input cards (cli/main.py build_input_pass) ---");
+const start = src.indexOf("// --- input cards (report.build_input_pass) ---");
 const end = src.indexOf("function fnNames()");
 if (start < 0 || end < 0) { console.error("mode section not found"); process.exit(2); }
 let SUMMARY = null;

@@ -1,14 +1,4 @@
-"""llc invocation (backend lane): MIR snapshots, asm emission.
-
-Runs llc on the final IR with the instrumentation the report needs:
-  * -print-after-all     -- per-pass IR + machine-code dumps (stderr)
-  * -debug-pass=Structure-- ordered backend pass structure (stderr)
-  * -time-passes         -- per-pass timing (stderr)
-  * -o <file>.s          -- final assembly (llc emits asm by default; no -S)
-
-Like runner_opt, a failing or timed-out llc is a *result*, not an exception:
-the report is partial, with the crash stack trace captured in stderr.
-"""
+"""llc invocation (backend lane): MIR snapshots, asm emission."""
 
 from __future__ import annotations
 
@@ -110,9 +100,7 @@ def run_llc(
 
     stdout_path.write_text(result.stdout)
     stderr_path.write_text(result.stderr)
-    # Same rule as run_opt's final IR: llc opens -o at startup, so a killed
-    # llc leaves an empty stub and a crashed one a half-written file. Neither
-    # is assembly worth showing, so a failed run reports none.
+    # A killed llc leaves an empty stub; a failed run reports no assembly.
     failed = result.timed_out or result.returncode != 0
     wrote = asm_path.is_file() and asm_path.stat().st_size > 0
     emitted = asm_path if (wrote and not failed) else None

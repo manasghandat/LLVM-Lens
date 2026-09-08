@@ -1,4 +1,4 @@
-"""Tests for cli.compile (and the toolchain discovery it builds on)."""
+"""Tests for llvm_lens.compile (and the toolchain discovery it builds on)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cli.compile import CompileError, compile_to_ir
+from llvm_lens.compile import CompileError, compile_to_ir
 from tests.conftest import SAMPLE_C
 
 

@@ -1,4 +1,4 @@
-"""Tests for cli.runner_llc: llc invocation, capture, crash/timeout handling."""
+"""Tests for llvm_lens.runner_llc: llc invocation, capture, crash/timeout handling."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cli.runner_llc import LlcError, llc_command, run_llc
+from llvm_lens.runner_llc import LlcError, llc_command, run_llc
 
 
 

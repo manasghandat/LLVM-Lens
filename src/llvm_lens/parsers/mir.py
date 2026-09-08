@@ -1,23 +1,4 @@
-"""Parse llc's ``-print-after-all`` machine-code dumps (backend lane).
-
-Machine pass dumps in llc 22 look like:
-
-    # *** IR Dump After X86 DAG->DAG Instruction Selection (x86-isel) ***:
-    # Machine code for function main: IsSSA, TracksLiveness
-    Function Live Ins: $edi in %5
-    bb.0 (%ir-block.2):
-      successors: %bb.1(0x50000000), %bb.3(0x30000000); %bb.1(62.50%), ...
-      %0:gr32 = MOV32rm ...
-    ...
-    # End machine code for function main.
-
-Conventions used here:
-  * vregs are ``%<digits>`` (optionally ``:class`` or ``.subreg``);
-  * physical registers are ``$name`` (``$rax``, ``$edi``, ``$noreg``);
-  * stack slots are ``%stack.<n>`` / ``%fixed-stack.<n>``;
-  * spills/reloads are memory-operand annotations ``:: (store ... into
-    %stack.n)`` / ``:: (load ... from %stack.n)``.
-"""
+"""Parse llc's -print-after-all machine-code dumps (backend lane)."""
 
 from __future__ import annotations
 
@@ -29,9 +10,7 @@ MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*
 FUNC_START_RE = re.compile(r"^# Machine code for function (\S+): (.+)$")
 FUNC_END_RE = re.compile(r"^# End machine code for function (\S+)\.$")
 LIVE_INS_RE = re.compile(r"^Function Live Ins: (.+)$")
-# Post-RA dumps prefix blocks with a byte size: "0B\tbb.0 (%ir-block.1):",
-# and may annotate the ir-block with alignment: "bb.9 (%ir-block.41, align 16):".
-# Block names can contain dots: "bb.2.._crit_edge.loopexit".
+# Post-RA dumps prefix blocks with a byte size and optional alignment.
 BLOCK_RE = re.compile(r"^(?:\d+B\t)?bb\.([\w.$]+)(?: \(%ir-block\.([\w.$]+)(?:, align \d+)?\))?:$")
 SUCCESSORS_RE = re.compile(r"^\s+successors: (.+)$")
 
@@ -125,9 +104,7 @@ def _parse_function(lines: list[str]) -> MachineFunction:
             continue
         match = SUCCESSORS_RE.match(line)
         if match:
-            # Successor lines use the short block form ("%bb.1" even when the
-            # block header is "bb.1..lr.ph.preheader"); cfg.py resolves it.
-            # Dedupe: the hex list and the probability tail repeat each block.
+            # Short block form; dedupe (hex list and probability tail repeat).
             names = (f"bb.{n}" for n in re.findall(r"%bb\.(\d+)", match.group(1)))
             successors = tuple(dict.fromkeys(names))
             continue
@@ -198,12 +175,7 @@ def parse_mir_snapshots(stderr: str) -> list[MirSnapshot]:
 
 
 def vreg_to_physreg(pre: MachineFunction, post: MachineFunction) -> dict[str, str]:
-    """Best-effort vreg -> physreg/stack-slot map.
-
-    Aligns instruction lines between the MIR state before VirtRegRewriter and
-    after it, pairing ``%N`` operands with whatever the corresponding
-    post-rewrite line replaced them with (a physical register or a stack slot).
-    """
+    """Best-effort vreg -> physreg/stack-slot map."""
     pre_lines = [line for block in pre.blocks for line in block.lines]
     post_lines = [line for block in post.blocks for line in block.lines]
     mapping: dict[str, str] = {}

@@ -1,37 +1,4 @@
-"""Source correlation: map IR / Machine IR lines back to the original source.
-
-Under ``-g`` every instruction carries a ``!dbg !N`` (IR) or
-``debug-location !N`` (MIR) reference to a ``!DILocation``, but the *definition*
-of that node is only printed at module scope -- a ``-print-changed=quiet``
-function dump references ``!N`` without defining it. Worse, opt renumbers
-metadata as passes drop it, so no single table serves the whole pipeline: the
-same ``ret i32 0`` is ``!dbg !237`` after SimplifyCFG, ``!212`` after SROA and
-``!180`` from GVN onwards.
-
-Each lane answers that differently:
-
-  Lane A  nothing to harvest. opt runs under ``-print-module-scope``, so every
-          dump defines the ``!N`` it references and carries its own table --
-          read off the very text the snapshot was cut from, which is the one
-          thing a separate run can never guarantee.
-  Lane B  one ``llc -stop-after=finalize-isel``, whose MIR output embeds the
-          module and its metadata. llc never renumbers mid-backend, so that one
-          table resolves every machine pass.
-
-The harvest is skipped when the input carries no debug info, and a failed one
-degrades to "no mapping" rather than an error: source correlation is an
-enrichment, never a precondition for the report.
-
-Metadata shapes consumed (LLVM 22)::
-
-    !180 = !DILocation(line: 77, column: 5, scope: !104)
-    !181 = !DILocation(line: 9, column: 3, scope: !88, inlinedAt: !180)
-    !104 = distinct !DISubprogram(name: "main", file: !1, line: 30, ...)
-    !88  = distinct !DILexicalBlock(scope: !104, file: !1, line: 63, column: 9)
-    !1   = !DIFile(filename: "tests/fixtures/sample.c", directory: "/repo")
-    !4   = !DIGlobalVariableExpression(var: !5, expr: !DIExpression())
-    !5   = distinct !DIGlobalVariable(name: "flag", file: !1, line: 21, ...)
-"""
+"""Source correlation: map IR/MIR lines back to the original source."""
 
 from __future__ import annotations
 
@@ -49,13 +16,10 @@ FIELD_RE = re.compile(r"\b(\w+): (?:!(\d+)|(\d+)|\"((?:[^\"\\]|\\.)*)\")")
 IR_REF_RE = re.compile(r"!dbg !(\d+)")
 MIR_REF_RE = re.compile(r"debug-location !(\d+)")
 
-# Nodes that name a source line directly. DILocation covers instructions;
-# the other two let a `define ... !dbg !49` header and a global's attachment
-# point at their declaration line instead of going unmapped.
+# Nodes that name a source line directly.
 LINE_BEARING = ("DILocation", "DISubprogram", "DILabel", "DIGlobalVariable")
 
-# Machine pass to stop at when harvesting the backend's metadata table. Every
-# target runs it, and stopping there is far cheaper than a full codegen.
+# Machine pass to stop at when harvesting the backend's metadata table.
 MIR_STOP_AFTER = "finalize-isel"
 
 
@@ -75,12 +39,7 @@ LineMap = list[SourceRef | None]
 
 
 def _fields(args: str) -> dict[str, str | int]:
-    """Parse a metadata node's argument list into {name: value}.
-
-    Metadata references keep their ``!`` prefix ("!104"), integers come back as
-    ints, strings unquoted. Nested nodes (``expr: !DIExpression()``) are values
-    we never need, so they simply do not match.
-    """
+    """Parse a metadata node's argument list into {name: value}."""
     out: dict[str, str | int] = {}
     for match in FIELD_RE.finditer(args):
         name, ref, number, text = match.groups()
@@ -94,11 +53,7 @@ def _fields(args: str) -> dict[str, str | int]:
 
 
 def parse_debug_table(module_text: str) -> DebugTable:
-    """Build the `!N` -> SourceRef table of one printed module.
-
-    Only nodes that name a line end up in the table; the rest of the debug
-    graph is walked to answer "which file is this scope in".
-    """
+    """Build the `!N` -> SourceRef table of one printed module."""
     nodes: dict[int, tuple[str, dict[str, str | int]]] = {}
     for line in module_text.splitlines():
         match = NODE_RE.match(line)
@@ -182,11 +137,7 @@ def harvest_mir_table(
     load: tuple[str, ...] = (),
     timeout: float | None = None,
 ) -> DebugTable:
-    """Harvest the backend's metadata table from a stop-after MIR dump.
-
-    llc numbers metadata once for the module it reads and never renumbers, so
-    this single table resolves ``debug-location`` in every machine pass.
-    """
+    """Harvest the backend's metadata table from a stop-after MIR dump."""
     cmd = [str(toolchain.llc.path), f"-stop-after={MIR_STOP_AFTER}", "-o", "-"]
     cmd.extend(f"-load={plugin}" for plugin in load)
     cmd.append(str(input_ir))

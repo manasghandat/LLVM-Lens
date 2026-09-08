@@ -1,12 +1,4 @@
-"""Subprocess helpers shared by the runners: capture, timeout, group kill.
-
-Every invocation runs in its own process group (start_new_session=True) so a
-timeout can kill the whole tree with killpg -- no orphaned clang/opt children.
-
-A *timeout* of None means wait indefinitely, which is the default the CLI
-passes: a long pipeline on a big module is slow, not hung, and a wall clock
-that truncates it produces a partial report that reads like a compiler bug.
-"""
+"""Subprocess helpers: capture, timeout, group kill."""
 
 from __future__ import annotations
 
@@ -29,11 +21,7 @@ class RunResult:
 
 
 def run_capture(cmd: list[str], timeout: float | None = None) -> RunResult:
-    """Run *cmd*, capture stdout/stderr, kill the process group on timeout.
-    *timeout* of None waits indefinitely, so ``timed_out`` is never True.
-    Never raises for a non-zero exit or a timeout -- callers decide how to
-    treat those (compile.py raises, runner_opt.py records them as results).
-    """
+    """Run *cmd*, capture stdout/stderr, kill the process group on timeout."""
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

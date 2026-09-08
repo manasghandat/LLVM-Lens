@@ -1,4 +1,4 @@
-"""Tests for cli.emit (report emission) and cli.main (lane builders, pipeline)."""
+"""Tests for llvm_lens.emit (report emission) and llvm_lens.report (lane builders, pipeline)."""
 
 from __future__ import annotations
 
@@ -6,17 +6,17 @@ import json
 import re
 from pathlib import Path
 
-from cli.diff import FnChange
-from cli.emit import ReportPass, emit_report
-from cli.main import (
+from llvm_lens.diff import FnChange
+from llvm_lens.emit import ReportPass, emit_report
+from llvm_lens.report import (
     BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
     build_commands, build_input_pass, build_lane_a, build_lane_b, build_report,
 )
-from cli.parsers.print_changed import strip_module_noise
-from cli.sourcemap import SourceRef
+from llvm_lens.parsers.print_changed import strip_module_noise
+from llvm_lens.sourcemap import SourceRef
 from tests.conftest import SAMPLE_C
 
-FRONTEND = Path(__file__).parent.parent / "frontend"
+FRONTEND = Path(__file__).parent.parent / "src" / "llvm_lens" / "frontend"
 
 
 def _passes_fixture() -> list[ReportPass]:
@@ -94,7 +94,7 @@ def test_emit_report_stamps_assets_so_a_rebuild_is_not_served_from_cache(tmp_pat
 
     # A changed asset gets a new stamp, which is what forces the reload.
     (report / "app.js").write_text("/* different */\n")
-    from cli.emit import _stamp_assets
+    from llvm_lens.emit import _stamp_assets
     _stamp_assets(report)
     assert re.search(r'src="app\.js\?v=([0-9a-f]{12})"', (report / "index.html").read_text()
                      ).group(1) != re.search(r'src="app\.js\?v=([0-9a-f]{12})"', first).group(1)

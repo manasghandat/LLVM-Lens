@@ -3,14 +3,52 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "llvm-pass-analyzer"
-version = "0.1.0"
+name = "llvm-lens"
+dynamic = ["version"]
 description = "Analyze LLVM opt/llc pass pipelines and emit a static HTML report"
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "0xn4utilus", email = "gyanendrabanjare8@gmail.com" }]
+keywords = ["llvm", "pass", "compiler", "opt", "llc", "mir", "ir"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+]
+
+[project.urls]
+Homepage = "https://github.com/manasghandat/LLVM-Lens"
 
 [project.scripts]
-llvm-pass-analyzer = "cli.main:main"
+llvm-lens = "llvm_lens.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+license-files = ["LICENSE"]
+
+[tool.setuptools.dynamic]
+version = { attr = "llvm_lens.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["cli", "cli.*"]
+where = ["src"]
+
+[tool.setuptools.package-data]
+llvm_lens = [
+    "frontend/index.html",
+    "frontend/app.js",
+    "frontend/style.css",
+    "frontend/vendor/*.js",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

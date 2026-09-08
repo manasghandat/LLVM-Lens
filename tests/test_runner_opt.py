@@ -1,10 +1,10 @@
-"""Tests for cli.runner_opt: opt invocation, capture, crash/timeout handling."""
+"""Tests for llvm_lens.runner_opt: opt invocation, capture, crash/timeout handling."""
 
 from __future__ import annotations
 
 import pytest
 
-from cli.runner_opt import OptError, run_opt
+from llvm_lens.runner_opt import OptError, run_opt
 
 # --- end-to-end against a real toolchain ------------------------------------
 

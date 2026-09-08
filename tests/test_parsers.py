@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cli.parsers.debug_pass_manager import parse_pass_runs
-from cli.parsers.legacy_pass_structure import parse_pass_structure
-from cli.parsers.mir import parse_mir_snapshots, vreg_to_physreg
-from cli.parsers.print_changed import (
+from llvm_lens.parsers.debug_pass_manager import parse_pass_runs
+from llvm_lens.parsers.legacy_pass_structure import parse_pass_structure
+from llvm_lens.parsers.mir import parse_mir_snapshots, vreg_to_physreg
+from llvm_lens.parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
 )
-from cli.parsers.time_passes import parse_time_passes
+from llvm_lens.parsers.time_passes import parse_time_passes
 
 
 

@@ -1,19 +1,4 @@
-"""Parse ``-time-passes`` output.
-
-Each timed block looks like:
-
-      Total Execution Time: 0.0007 seconds (0.0011 wall clock)
-
-       ---User Time---   --System Time--   --User+System--   ---Wall Time---  --- Name ---
-       0.0000 (  0.0%)   ...                 ...              TargetIRAnalysis
-       ...
-
-The final "Pass execution timing report" summary block (preceded by a
-``===...===`` banner, the centered title line, then another ``===...===``)
-tables every pass of the whole run; that is the primary per-pass timing
-source (matched by name in main.py). Earlier interleaved blocks belong to
-the pass whose section precedes them (attributed by line).
-"""
+"""Parse -time-passes output."""
 
 from __future__ import annotations
 
@@ -23,8 +8,7 @@ from dataclasses import dataclass
 TOTAL_TIME_RE = re.compile(
     r"^\s*Total Execution Time: ([\d.]+) seconds \(([\d.]+) wall clock\)$"
 )
-# Four time columns of "0.0000 ( 12.9%)", then the (possibly spaced) name.
-# Captures the User+System column (same semantics as block total_seconds).
+# Four time columns of "0.0000 ( 12.9%)", then the name; captures User+System.
 ROW_RE = re.compile(
     r"^\s*[\d.]+\s+\([\s\d.]+%\)\s+"      # ---User Time---
     r"[\d.]+\s+\([\s\d.]+%\)\s+"          # --System Time--
@@ -32,8 +16,7 @@ ROW_RE = re.compile(
     r"[\d.]+\s+\([\s\d.]+%\)\s+"          # ---Wall Time---
     r"(.+)$"                              # --- Name ---
 )
-# The final summary banner: "===---...===" lines plus a centered
-# "Pass execution timing report" line (no === on it in LLVM 22).
+# The final "Pass execution timing report" summary banner.
 BANNER_RE = re.compile(r"Pass execution timing report")
 
 

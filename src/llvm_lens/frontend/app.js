@@ -7,7 +7,7 @@
  *
  * Data: fetch('data/manifest.json') first; browsers block fetch() on
  * file:// URLs, so we fall back to the sibling .js wrappers emitted by
- * cli/emit.py. */
+ * emit.py. */
 
 "use strict";
 
@@ -356,7 +356,7 @@ let CURRENT_PASS = null;       // loaded chunk for STATE.passId
 function passSummaries() { return (CURRENT_MANIFEST || { passes: [] }).passes; }
 function currentPassSummary() { return passSummaries().find(p => p.id === STATE.passId); }
 
-// --- input cards (cli/main.py build_input_pass) ---
+// --- input cards (report.build_input_pass) ---
 // Each lane opens on the LLVM IR module it was handed: clang's output for the
 // IR lane, the post-opt module llc reads for the machine lane. Nothing in the
 // lane precedes them, so there is nothing to diff against, and their one
@@ -406,7 +406,7 @@ function renderLaneTabs() {
 
 // --- "only changed" (both lanes) ---
 // "changed" means the same thing in either lane -- this pass's snapshot of some
-// function differs from the previous snapshot of that function (cli/diff.py
+// function differs from the previous snapshot of that function (diff.py
 // FnChange.changed) -- so the filter applies to machine passes exactly as it
 // does to IR passes. Two things survive it: a custom pass, because the point of
 // badging one is to be able to find it and an analysis-only plugin never
@@ -415,7 +415,7 @@ function passVisible(p, onlyChanged) {
   return !onlyChanged || p.changed || p.isCustom;
 }
 
-// Lines added / removed across every function the pass touched (cli/emit.py
+// Lines added / removed across every function the pass touched (emit.py
 // _line_delta). This is the one per-pass number both lanes can show: llc's
 // legacy pass manager reports no analyses, so the machine rows used to read
 // "+0 -0" for every pass. Input cards carry no delta -- nothing precedes them.
@@ -643,7 +643,7 @@ function irPaneHtml() {
 
 // --- Source view: this stage's IR beside the C it came from -----------------
 
-// Debug info maps each IR/MIR line to one source line (cli/sourcemap.py
+// Debug info maps each IR/MIR line to one source line (sourcemap.py
 // resolves the !dbg metadata at build time). The two panes are keyed on that
 // line number: clicking either side highlights every counterpart of it.
 
@@ -970,9 +970,9 @@ function labelBox(label, charW = CFG_FONT.charW) {
   return { w: contentW + 2 * padX, h: visual * lineH + 2 * padY, wrapped: wrapped.join("\n") };
 }
 
-// cli/cfg.py emits each node as: n0 [name="bb.0", label="…", code="…"], with
+// cfg.py emits each node as: n0 [name="bb.0", label="…", code="…"], with
 // label and code absent on a block with no instructions. Attributes are read
-// by name rather than by position, so their order stays cli/cfg.py's business.
+// by name rather than by position, so their order stays cfg.py's business.
 const DOT_ATTR_RE = /(\w+)="((?:[^"\\]|\\.)*)"/g;
 
 function parseDot(dot) {
@@ -1159,7 +1159,7 @@ function mountCfg(el, dot) {
 /* --- boot ---------------------------------------------------------------- */
 
 /* --- command sheet --------------------------------------------------------- */
-// metadata.commands is the argv of every stage that actually ran (cli/main.py
+// metadata.commands is the argv of every stage that actually ran (report.py
 // build_commands), instrumentation flags and all. It answers "what exactly
 // produced this report" -- which clang, which pipeline string, which triple,
 // which plugin .so -- for someone reading the report on another machine.

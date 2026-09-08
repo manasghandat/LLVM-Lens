@@ -21,7 +21,7 @@ This produces `libMBAAdd.so`.
 
 ```sh
 LLVM_LENS_BIN_DIR=/usr/lib/llvm-22/bin \
-python -m cli.main examples/mba-add/demo.ll \
+llvm-lens examples/mba-add/demo.ll \
   -o /tmp/mba-report \
   --load-pass-plugin "$PWD/examples/mba-add/libMBAAdd.so" \
   --custom-pass mba-add

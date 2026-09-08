@@ -1,13 +1,4 @@
-"""DOT generation for IR control-flow graphs and machine CFGs.
-
-IR CFGs are parsed from function text (block labels + terminator successors);
-machine CFGs come from the ``successors:`` lists of MIR blocks. DOT strings
-are stored in the report JSON and rendered client-side with cytoscape +
-dagre. Each node carries a truncated ``label`` (a few instructions) for the
-graph display, a full ``code`` attribute so the viewer can show the complete
-block body on demand, and a ``name`` attribute holding the block label, which
-identifies the block in that expanded view but is not drawn in the graph.
-"""
+"""DOT generation for IR control-flow graphs and machine CFGs."""
 
 from __future__ import annotations
 
@@ -15,24 +6,17 @@ import re
 
 from .parsers.mir import MachineFunction
 
-# A block label at column 0, e.g. "entry:" / ".lr.ph:" / "!_Z3foov:".
+# A block label at column 0, e.g. "entry:" / ".lr.ph:".
 LABEL_RE = re.compile(r"^([.\w\"$%-]+):\s*(;.*)?$")
-# "label %x" tokens appear only in terminators (br/switch/indirectbr/callbr);
-# switch labels may trail across continuation lines, so we collect them all
-# per block and flush when the block ends (next label line).
+# "label %x" tokens appear only in terminators.
 BR_LABEL_RE = re.compile(r"label %([.\w\"$-]+)")
-# An unnamed parameter, as a dump prints it ("%0"); the count of them decides
-# which slot number an unnamed entry block got.
+# An unnamed parameter, as a dump prints it ("%0").
 UNNAMED_VALUE_RE = re.compile(r"%\d+\b")
 
-# Graph readability caps: node labels show up to MAX_CODE_LINES instructions,
-# each truncated to MAX_CODE_CHARS. The full untruncated lines go into the
-# node's ``code`` attribute.
+# Graph readability caps: up to MAX_CODE_LINES instructions, truncated to MAX_CODE_CHARS.
 MAX_CODE_LINES = 6
 MAX_CODE_CHARS = 52
-# Drop debug metadata so the visible code is mostly operands: IR lines carry
-# ", !dbg !36" tails; MIR lines carry "debug-location !19" tokens and
-# "; file.c:line:col" source comments.
+# Drop debug metadata so visible code is mostly operands.
 IR_DBG_TAIL_RE = re.compile(r",?\s+!dbg\s+![^\s,]+.*$")
 MIR_TAIL_RE = re.compile(r"debug-location\s+!\d+\s*")
 
@@ -69,14 +53,7 @@ def _parameter_list(define_line: str) -> str:
 
 
 def _implicit_entry_name(define_line: str) -> str:
-    """The entry block's label, which LLVM omits when the block is unnamed.
-
-    Unnamed values are numbered in order: the parameters take the first slots
-    and the entry block the next one, so the entry of
-    ``define i64 @f(ptr %0)`` is ``%1``. That is the number the function's own
-    br targets and phi predecessors use to refer back to it, so naming the
-    block this way is what lets a back edge into the entry resolve.
-    """
+    """The entry block's implicit label when LLVM omits it (unnamed)."""
     return str(len(UNNAMED_VALUE_RE.findall(_parameter_list(define_line))))
 
 
@@ -89,12 +66,7 @@ def _clean_mir_line(line: str) -> str | None:
 
 
 def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
-    """Build a DOT graph for one function's CFG from its IR text.
-
-    Node labels carry up to MAX_CODE_LINES instructions so the graph shows
-    the actual code in each block; the ``code`` attribute carries every
-    instruction line untruncated for the full-body view.
-    """
+    """Build a DOT graph for one function's CFG from its IR text."""
     nodes: list[tuple[str, list[str]]] = []
     edges: list[tuple[str, str]] = []
     current: str | None = None
@@ -127,10 +99,7 @@ def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
         if line.strip() == "}":
             break  # function terminator: nothing after it belongs to a block
         if current is None:
-            # No label line has opened a block yet, so this is the entry block,
-            # whose label LLVM omits when it is unnamed. Without this the entry
-            # block is missing from every CFG -- and a function that is one
-            # unnamed block has no CFG at all.
+            # No label yet: this is the (implicitly named) entry block.
             if define_line is None:
                 continue  # not inside a function body
             current = _implicit_entry_name(define_line)
@@ -146,12 +115,7 @@ def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
 
 
 def _resolve_successor(short: str, node_names: list[str]) -> str | None:
-    """Map a short successor name ("bb.1") to its full block name.
-
-    llc's ``successors:`` lines use the short form even when the block header
-    is dotted ("bb.1..lr.ph.preheader"). Resolve by exact match, else unique
-    prefix match.
-    """
+    """Map a short successor name to its full block name."""
     if short in node_names:
         return short
     matches = [name for name in node_names if name.startswith(short + ".")]
@@ -159,10 +123,7 @@ def _resolve_successor(short: str, node_names: list[str]) -> str | None:
 
 
 def machine_cfg_dot(machine_function: MachineFunction) -> str:
-    """Build a DOT graph for one function's machine CFG from MIR blocks.
-
-    Node labels carry up to MAX_CODE_LINES instructions.
-    """
+    """Build a DOT graph for one function's machine CFG from MIR blocks."""
     nodes: list[tuple[str, list[str]]] = []
     edges: list[tuple[str, str]] = []
     for block in machine_function.blocks:
@@ -183,17 +144,12 @@ def machine_cfg_dot(machine_function: MachineFunction) -> str:
 
 def _render_dot(nodes: list[tuple[str, list[str]]], edges: list[tuple[str, str]]) -> str:
     def escape(text: str) -> str:
-        # Backslash and quote first, then newlines -> DOT's \n escape (which
-        # the frontend parser turns back into real newlines).
+        # Backslash and quote first, then newlines -> DOT's \n escape.
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
     parts = ["digraph {", '  rankdir="TB";']
     for i, (name, lines) in enumerate(nodes):
-        # The block name travels in its own attribute and is not part of the
-        # label: drawn inside the node it reads as a stray instruction -- a bare
-        # "6" or "bb.1" sitting above the block body. The viewer uses it to name
-        # the block in the expanded block view instead. With no name heading
-        # them, the label's instructions no longer need their leading indent.
+        # Block name travels in its own attribute, not the drawn label.
         display = [_truncate(line) for line in lines[:MAX_CODE_LINES]]
         attrs = [f"name={escape(name)}"]
         if display:

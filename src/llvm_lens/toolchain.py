@@ -1,17 +1,4 @@
-"""LLVM tool discovery and version sanity checks.
-
-Tools are located in order:
-  1. an explicit bin dir (``LLVM_LENS_BIN_DIR`` env var or ``--bin-dir``),
-     used exclusively -- a user-supplied dir never silently falls back to
-     PATH;
-  2. versioned binaries on PATH for the expected major (``clang-22``);
-  3. unversioned binaries on PATH (``clang``).
-
-Every discovered tool must report the expected LLVM major version
-(``--llvm-version``, default 22). A missing tool or a mixed-version set is a
-hard error, not a warning: pass output captured against one LLVM version is
-not trustworthy when parsed against another.
-"""
+"""LLVM tool discovery and version sanity checks."""
 
 from __future__ import annotations
 
@@ -99,12 +86,7 @@ def discover_toolchain(
     bin_dir: str | Path | None = None,
     expected_major: int | None = None,
 ) -> Toolchain:
-    """Locate clang/opt/llc/llvm-dis and verify they all match the expected major.
-
-    *expected_major* comes from ``--llvm-version``; it drives the PATH search
-    (``clang-<major>``) as well as the check, so selecting a major is enough to
-    pick up a side-by-side install without also naming its bin dir.
-    """
+    """Locate clang/opt/llc/llvm-dis and verify they match the expected major."""
     if expected_major is None:
         expected_major = DEFAULT_MAJOR
     if bin_dir is None and os.environ.get(BIN_DIR_ENV):

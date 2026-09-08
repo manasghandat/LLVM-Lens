@@ -1,20 +1,4 @@
-"""Compile a source file to LLVM IR (clang -S -emit-llvm).
-
-Accepts:
-  * C/C++ sources (.c/.cc/.cpp/.cxx/.C) -- compiled with clang at -O0 with
-    the optnone attribute suppressed (-Xclang -disable-O0-optnone) so later
-    optimization passes can run, plus -g for debug locations;
-  * textual IR (.ll) -- passed through unchanged;
-  * bitcode (.bc) -- disassembled with llvm-dis.
-
-Crash/timeout safety: subprocesses run in their own process group and are
-killed as a group on timeout so no children linger; failures raise
-CompileError carrying the captured stderr tail. There is no timeout unless
-one is asked for (--timeout) -- see cli/proc.py.
-
-The result is a CompiledSource describing the IR file plus the toolchain and
-command that produced it -- the pieces the report metadata needs.
-"""
+"""Compile a source file to LLVM IR (clang -S -emit-llvm)."""
 
 from __future__ import annotations
 
@@ -28,8 +12,7 @@ from .toolchain import Toolchain
 
 SOURCE_EXTS = {".c", ".cc", ".cpp", ".cxx"}
 
-# Tokens that must appear in a plausible textual IR module (cheap sniff;
-# llvm-as round-trips are the opt runner's job).
+# Tokens that must appear in a plausible textual IR module.
 _IR_SNIFF_TOKENS = ("ModuleID", "define ", "declare ", "target triple")
 
 _STDERR_TAIL_LINES = 20
@@ -93,11 +76,7 @@ def compile_to_ir(
     timeout: float | None = None,
     extra_args: tuple[str, ...] = (),
 ) -> CompiledSource:
-    """Compile/convert *source* to textual IR and return the result.
-
-    *toolchain* can be passed in (so the opt runner reuses the same discovery);
-    otherwise it is resolved here from *bin_dir* / environment.
-    """
+    """Compile/convert *source* to textual IR and return the result."""
     source = Path(source)
     if not source.is_file():
         raise CompileError(f"input not found: {source}")

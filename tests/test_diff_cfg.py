@@ -1,13 +1,13 @@
-"""Tests for cli.diff (snapshot pairing) and cli.cfg (DOT generation)."""
+"""Tests for llvm_lens.diff (snapshot pairing) and llvm_lens.cfg (DOT generation)."""
 
 from __future__ import annotations
 
 import re
 
-from cli.cfg import ir_cfg_dot, machine_cfg_dot
-from cli.diff import FnChange, pair_snapshots
-from cli.parsers.mir import MachineBlock, MachineFunction
-from cli.parsers.print_changed import IrSnapshot
+from llvm_lens.cfg import ir_cfg_dot, machine_cfg_dot
+from llvm_lens.diff import FnChange, pair_snapshots
+from llvm_lens.parsers.mir import MachineBlock, MachineFunction
+from llvm_lens.parsers.print_changed import IrSnapshot
 
 
 def _snap(pass_name: str, function: str, ir: str) -> IrSnapshot:
@@ -181,7 +181,7 @@ def test_ir_cfg_of_a_function_that_is_one_unnamed_block():
 
 def test_machine_cfg_dot_from_real_dump():
     """Real llc successors lines use dotted block names; edges must survive."""
-    from cli.parsers.mir import parse_mir_snapshots
+    from llvm_lens.parsers.mir import parse_mir_snapshots
 
     dump = (
         "# *** IR Dump After X86 DAG->DAG Instruction Selection (x86-isel) ***:\n"
@@ -226,7 +226,7 @@ def _machine_function() -> MachineFunction:
 def test_machine_cfg_align16_block_headers():
     """Post-RA headers may carry '(%ir-block.N, align 16)'; they are blocks,
     not instructions, and their successors still resolve."""
-    from cli.parsers.mir import parse_mir_snapshots
+    from llvm_lens.parsers.mir import parse_mir_snapshots
 
     dump = (
         "# *** IR Dump After X86 Assembly Printer (x86-asm-printer) ***:\n"
@@ -264,7 +264,7 @@ def test_machine_cfg_dot():
 
 
 def test_cfg_labels_capped_and_trimmed():
-    from cli.cfg import MAX_CODE_CHARS, MAX_CODE_LINES
+    from llvm_lens.cfg import MAX_CODE_CHARS, MAX_CODE_LINES
 
     ir = """define void @f() {
 entry:

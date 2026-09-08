@@ -1,13 +1,4 @@
-"""Per-function snapshot pairing and dedupe.
-
-A pass only *changed* a function when its snapshot differs from the previous
-snapshot of that same function. Snapshot streams (opt -print-changed=quiet,
-llc machine dumps) are per (pass, function); this module turns them into
-before/after change records so the report can mark "changed only".
-
-Items are duck-typed: anything with ``.function`` and ``.text`` attributes
-works -- IrSnapshot (opt lane) and MachineFunction (backend lane).
-"""
+"""Per-function snapshot pairing and dedupe."""
 
 from __future__ import annotations
 
@@ -33,13 +24,7 @@ class FnChange:
 
     @property
     def line_delta(self) -> tuple[int, int]:
-        """(added, removed) line counts, the same tally the diff view shows.
-
-        A replaced region counts on both sides, exactly as it renders: three
-        lines rewritten into two is +2 -3, not +0 -1. Whole-text insertions
-        (a function's first snapshot, machine IR before ISel has run) are all
-        additions, which is what actually happened.
-        """
+        """Line counts (added, removed), same tally the diff view shows."""
         added = removed = 0
         matcher = difflib.SequenceMatcher(
             None, self.before.splitlines(), self.after.splitlines(), autojunk=False,
@@ -60,12 +45,7 @@ class FnChange:
 
 
 def pair_snapshots(items: Iterable[Snapshot]) -> dict[str, list[FnChange]]:
-    """Pair each snapshot with its predecessor per function, in stream order.
-
-    Returns ``{function: [FnChange, ...]}``. The first snapshot of a function
-    pairs with an empty "before"; an unchanged pair (before == after) means
-    the pass did not modify that function.
-    """
+    """Pair each snapshot with its predecessor per function, in stream order."""
     by_function: dict[str, list[FnChange]] = {}
     previous: dict[str, str] = {}
     for item in items:

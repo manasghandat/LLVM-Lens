@@ -6,8 +6,8 @@ exactly what `opt -print-module-scope` and `llc -stop-after` print on LLVM 22.
 
 from __future__ import annotations
 
-from cli.parsers.print_changed import parse_changed_ir
-from cli.sourcemap import (
+from llvm_lens.parsers.print_changed import parse_changed_ir
+from llvm_lens.sourcemap import (
     MIR_REF_RE,
     SourceRef,
     encode,

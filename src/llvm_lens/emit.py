@@ -1,20 +1,4 @@
-"""Report emission: manifest.json + per-pass JSON chunks + frontend copy.
-
-Layout:
-
-    report/
-      index.html, app.js, style.css     (copied from frontend/)
-      data/
-        manifest.json                   metadata + ordered pass list
-        manifest.js                     same data as a script (file://-safe)
-        pass-<id>.json                  per-pass detail chunk
-        pass-<id>.js                    same data as a script (file://-safe)
-
-The .js wrappers exist because browsers refuse ``fetch()`` on ``file://``
-URLs; the frontend tries fetch first and falls back to script injection.
-``manifest.js`` also initializes the ``window.__LLVM_LENS_DATA__`` store the
-chunk scripts fill.
-"""
+"""Report emission: manifest.json + per-pass JSON chunks + frontend copy."""
 
 from __future__ import annotations
 
@@ -29,8 +13,6 @@ from typing import Any
 from .diff import FnChange
 
 # Files copied into the report directory (paths relative to frontend/).
-# vendor/ holds the UMD builds of the CFG graph stack (cytoscape + dagre),
-# so reports stay fully self-contained and file://-safe.
 FRONTEND_FILES = (
     "index.html",
     "app.js",
@@ -41,14 +23,7 @@ FRONTEND_FILES = (
 )
 
 
-# Asset references in index.html that get a cache-busting stamp. A report is
-# rebuilt over its own directory, so a browser holding the previous app.js or
-# style.css keeps serving it against the new index.html -- half the UI is then
-# from one build and half from another, which reads as a broken feature rather
-# than a stale cache. The stamp is a digest of the file's own bytes, so it
-# changes only when the asset does and normal caching still applies.
-# An already-stamped reference must match too, so re-stamping a report in place
-# replaces the digest rather than silently doing nothing.
+# Asset references in index.html that get a cache-busting content-digest stamp.
 ASSET_REF_RE = re.compile(
     r'(?P<attr>href|src)="(?P<path>[^"?#]+\.(?:js|css))(?:\?v=[0-9a-f]+)?"'
 )
@@ -87,18 +62,11 @@ class ReportPass:
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
     asm: str | None = None  # final assembly text, attached to the last mir pass
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
-    # The synthetic pre-pipeline card (cli/main.py build_input_pass). Nothing
-    # precedes it, so there is nothing to diff against, and its "function" is
-    # a whole module, so a control-flow graph of it is meaningless -- the
-    # viewer offers only the IR and Source views for it.
+    # Synthetic pre-pipeline card; nothing to diff against, no CFG to show.
     is_input: bool = False
-    # fn -> source map of the *after* snapshot: per line, [file index, source
-    # line] or None. Built by cli/sourcemap.py; empty without debug info. The
-    # before side needs no map of its own -- it is the previous pass's after.
+    # fn -> source map of the "after" snapshot (per line, [file index, line] or None).
     src_maps: dict[str, list[Any]] = field(default_factory=dict)
-    # Pass-manager scope (ir lane only): "module" | "cgscc" | "function" |
-    # "loop", inferred from the -debug-pass-manager "on <target>" field. Null for
-    # the mir lane, which gets its hierarchy from -debug-pass=Structure instead.
+    # Pass-manager scope (ir lane only): "module" | "cgscc" | "function" | "loop".
     scope: str | None = None
 
 
@@ -115,8 +83,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
             functions[fn]["dotBefore"] = dot_before
         if dot_after:
             functions[fn]["dotAfter"] = dot_after
-        # Omit all-None maps: a snapshot with no resolvable location would
-        # otherwise cost a full-length array of nulls per pass.
+        # Omit all-None maps to avoid a full-length null array per pass.
         src_after = pass_.src_maps.get(fn)
         if src_after and any(src_after):
             functions[fn]["srcAfter"] = src_after
@@ -142,14 +109,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
 
 
 def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
-    """Lines added/removed across every function this pass touched.
-
-    The pass list shows this per row, in both lanes. It is None for an input
-    card: nothing in the lane precedes one, so counting its whole module as
-    "added" would read as a pass that wrote the program. llc's legacy PM
-    reports no analyses at all, so this is the only per-pass number lane B
-    can show -- before it, every machine row read "+0 -0".
-    """
+    """Lines added/removed across every function this pass touched."""
     if pass_.is_input:
         return None
     added = removed = 0
