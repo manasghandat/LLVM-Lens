@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -66,6 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Correlate IR/MIR lines with the original source (needs debug "
              "info; costs one extra llc run).  [default: on]",
     )
+    parser.add_argument(
+        "--open", dest="open_report", action="store_true",
+        help="Open the report in the default browser once it is written.",
+    )
     return parser
 
 
@@ -101,6 +106,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("warning: opt failed/timed out; report is partial", file=sys.stderr)
     if summary["llcCrashed"]:
         print("warning: llc failed/timed out; report is partial", file=sys.stderr)
+    if args.open_report:
+        webbrowser.open((Path(summary["reportDir"]) / "index.html").as_uri())
     return 0
 
 

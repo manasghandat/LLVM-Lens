@@ -50,7 +50,14 @@ llvm-lens sample.c -o report
 python -m llvm_lens sample.c -o report
 ```
 
-Then open `report/index.html`. Run `llvm-lens --help` for every option.
+Then open `report/index.html`, or pass `--open` to launch it in your default
+browser automatically:
+
+```sh
+llvm-lens sample.c --open
+```
+
+Run `llvm-lens --help` for every option.
 
 ### Examples
 
