@@ -10,6 +10,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from .analyses import compute_analyses
 from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
 from .diff import FnChange
@@ -647,6 +648,7 @@ def build_report(
         "optCrashed": opt_result.failed,
         "llcCrashed": bool(llc_result and llc_result.failed),
         "finalCfg": final_cfg,
+        "analyses": compute_analyses(input_ir),
         "sourceFiles": source_files,
         "pipelineTree": pipeline_tree,
         "passArguments": pass_arguments,

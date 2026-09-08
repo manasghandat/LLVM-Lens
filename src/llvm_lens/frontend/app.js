@@ -342,6 +342,7 @@ let STATE = {
   mode: "diff",              // main view: "cfg" | "diff" | "ir" (not the lane)
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
+  analysisType: "pdt",       // analyses pane: pdt | cdg | ddg | pdg | mdg | lnt | cg
   diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
   srcFile: null,             // Source view: path of the file shown
   srcLine: null,             // Source view: correlated source line, or null
@@ -365,7 +366,7 @@ function currentPassSummary() { return passSummaries().find(p => p.id === STATE.
 const INPUT_MODES = ["ir", "src"];
 // Views that are always available regardless of the selected pass — the structure view
 // overview is meaningful even on the input cards, so it is never hidden.
-const GLOBAL_MODES = ["structure"];
+const GLOBAL_MODES = ["structure", "analyses"];
 
 // True on either lane's input card (lane A's "Input IR", lane B's "Optimized
 // IR"): both hold a whole LLVM IR module handed to that lane, not a pass.
@@ -572,6 +573,37 @@ function cfgPaneHtml() {
     ? `<div class="cfg-pair${stacked}">${cfgBodyHtml(dotBefore, "before")}${cfgBodyHtml(dotAfter, "after")}</div>`
     : cfgBodyHtml(STATE.cfgSource === "before" ? dotBefore : dotAfter, STATE.cfgSource);
   return pane("CFG", chips, "", body);
+}
+
+const ANALYSIS_TYPES = ["pdt", "cdg", "ddg", "pdg", "mdg", "lnt", "cg"];
+const ANALYSIS_LABELS = {
+  pdt: "PDT", cdg: "CDG", ddg: "DDG", pdg: "PDG", mdg: "MDG", lnt: "LNT", cg: "Call graph",
+};
+
+function analysesPaneHtml() {
+  const analyses = ((CURRENT_MANIFEST || {}).metadata || {}).analyses || {};
+  const functions = analyses.functions || {};
+  if (!analyses.callGraph && !Object.keys(functions).length) {
+    return pane("Graphs", "", "", '<div class="cfg-empty">(no analyses for this module)</div>');
+  }
+  if (!ANALYSIS_TYPES.includes(STATE.analysisType)) STATE.analysisType = "pdt";
+  const chips = ANALYSIS_TYPES.map(t =>
+    `<button class="ptab ${t === STATE.analysisType ? "active" : ""}" data-analysis="${t}">${ANALYSIS_LABELS[t]}</button>`
+  ).join("");
+  let dot, label;
+  if (STATE.analysisType === "cg") {
+    dot = analyses.callGraph;
+    label = "call graph";
+  } else {
+    const fnGraphs = functions[STATE.fn];
+    dot = fnGraphs && fnGraphs[STATE.analysisType];
+    label = ANALYSIS_LABELS[STATE.analysisType] + (STATE.fn ? ` · ${STATE.fn}` : "");
+  }
+  const body = dot
+    ? cfgBodyHtml(dot, label)
+    : `<div class="cfg-empty">(no ${ANALYSIS_LABELS[STATE.analysisType]}${STATE.analysisType !== "cg" && STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : ""})</div>`;
+  // The graphs are a fixed whole-report set; they don't step with the pass.
+  return pane("Graphs", chips, "final graphs only · not per-pass", body);
 }
 
 function diffPaneHtml() {
@@ -867,7 +899,8 @@ function renderMain() {
       : mode === "cfg" ? cfgPaneHtml()
         : mode === "diff" ? diffPaneHtml()
           : mode === "src" ? srcPaneHtml()
-            : irPaneHtml();
+            : mode === "analyses" ? analysesPaneHtml()
+              : irPaneHtml();
   if (mode === "src") applySrcHighlight("cmapside");
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
@@ -1303,6 +1336,8 @@ document.getElementById("split").addEventListener("click", evt => {
   if (ctx) { STATE.diffContext = ctx.dataset.ctx; renderMain(); return; }
   const file = evt.target.closest(".ptab[data-srcfile]");
   if (file) { STATE.srcFile = file.dataset.srcfile; renderMain(); return; }
+  const analysis = evt.target.closest(".ptab[data-analysis]");
+  if (analysis) { STATE.analysisType = analysis.dataset.analysis; renderMain(); return; }
 
   // Structure tree: a group header toggles collapse; a leaf drills into its pass.
   const head = evt.target.closest(".ptree-head");

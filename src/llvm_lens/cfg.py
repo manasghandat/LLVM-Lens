@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from .parsers.mir import MachineFunction
 
@@ -65,20 +66,27 @@ def _clean_mir_line(line: str) -> str | None:
     return MIR_TAIL_RE.sub("", line.split(";", 1)[0]).strip()
 
 
-def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
-    """Build a DOT graph for one function's CFG from its IR text."""
-    nodes: list[tuple[str, list[str]]] = []
-    edges: list[tuple[str, str]] = []
+@dataclass(frozen=True)
+class Block:
+    name: str
+    code: tuple[str, ...] = ()
+    successors: tuple[str, ...] = ()
+
+
+def ir_cfg(function_ir: str) -> tuple[str, list[Block]]:
+    """Parse one function's IR into (entry block name, blocks with successors)."""
+    blocks: list[Block] = []
     current: str | None = None
     pending: list[str] = []
     code: list[str] = []
     define_line: str | None = None
 
     def flush() -> None:
-        nonlocal pending
+        nonlocal pending, code
         if current is not None:
-            edges.extend((current, successor) for successor in pending)
+            blocks.append(Block(current, tuple(code), tuple(pending)))
         pending = []
+        code = []
 
     for line in function_ir.splitlines():
         if line.startswith(("declare", "attributes")):
@@ -88,29 +96,32 @@ def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
             continue
         label = LABEL_RE.match(line)
         if label:
-            flush()  # block boundary: the previous block's terminators are done
-            if current is not None:
-                nodes.append((current, code))  # the finished block keeps its code
+            flush()
             current = label.group(1)
-            code = []
             continue
         if not line.strip():
             continue
         if line.strip() == "}":
-            break  # function terminator: nothing after it belongs to a block
+            break
         if current is None:
-            # No label yet: this is the (implicitly named) entry block.
             if define_line is None:
-                continue  # not inside a function body
+                continue
             current = _implicit_entry_name(define_line)
-            code = []
         pending.extend(BR_LABEL_RE.findall(line))
         cleaned = _clean_ir_line(line)
         if cleaned is not None:
             code.append(cleaned)
     flush()
-    if current is not None:
-        nodes.append((current, code))
+
+    entry = blocks[0].name if blocks else (_implicit_entry_name(define_line) if define_line else "")
+    return entry, blocks
+
+
+def ir_cfg_dot(function_ir: str, function_name: str = "") -> str:
+    """Build a DOT graph for one function's CFG from its IR text."""
+    _entry, blocks = ir_cfg(function_ir)
+    nodes = [(b.name, list(b.code)) for b in blocks]
+    edges = [(b.name, s) for b in blocks for s in b.successors]
     return _render_dot(nodes, edges)
 
 
