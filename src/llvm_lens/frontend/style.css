@@ -403,6 +403,21 @@ body.rail-collapsed .rail-edge { display: none; }
   rgba(121, 201, 220, 0.16)) var(--panel2); }
 .urow.hit .utext { opacity: 1; }
 .irside.irmap .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+
+/* --- ISel view: LLVM IR <-> machine IR -------------------------------------- */
+
+/* A row that has a counterpart on the other side is clickable; one that does
+   not -- an IR block selection dropped, a machine block the backend invented --
+   is dimmed rather than hidden, because its absence is the finding. */
+.urow.ilink { cursor: pointer; }
+.urow.ilink:hover { background: var(--panel); }
+.urow.idrop .utext, .urow.inew .utext { opacity: 0.45; }
+.iselir .urow.hit, .iselmir .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+/* Value refs are a finer link than the block pair, so they get their own tint. */
+.urow.vref { background: rgba(143, 214, 164, 0.18); }
+.urow.vref .utext { opacity: 1; }
+.urow.vref .uln { background: linear-gradient(rgba(143, 214, 164, 0.18),
+  rgba(143, 214, 164, 0.18)), var(--panel2); }
 .cmapside .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
 
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */

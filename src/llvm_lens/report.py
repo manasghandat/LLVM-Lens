@@ -15,9 +15,10 @@ from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
 from .diff import FnChange
 from .emit import ReportPass, emit_report
+from .isel import correlate
 from .parsers.debug_pass_manager import parse_pass_runs
 from .parsers.legacy_pass_structure import PassNode, analyses_by_pass, build_tree, parse_pass_structure
-from .parsers.mir import parse_mir_snapshots, vreg_to_physreg
+from .parsers.mir import IrDump, parse_ir_dumps, parse_mir_snapshots, vreg_to_physreg
 from .parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
 )
@@ -446,9 +447,33 @@ def build_lane_b(
         ))
 
     _attach_reg_maps(passes, order, by_id, fn_seq)
+    if passes and order:
+        _attach_isel(passes[0], by_id[order[0]], parse_ir_dumps(stderr))
     if passes and asm_text:
         passes[-1].asm = asm_text
     return passes, nodes, pass_arguments
+
+
+def _attach_isel(card: ReportPass, group: list[Any], ir_dumps: list[IrDump]) -> None:
+    for snapshot in group:
+        fn = next(iter(snapshot.functions))
+        change = card.functions.get(fn)
+        ir_text = _pre_isel_ir(ir_dumps, fn, snapshot.line)
+        if change is None or ir_text is None:
+            continue
+        correlation = correlate(ir_text, change.after)
+        if correlation:
+            card.isel_map[fn] = correlation
+
+
+def _pre_isel_ir(ir_dumps: list[IrDump], fn: str, line: int) -> str | None:
+    for dump in reversed(ir_dumps):
+        if dump.line >= line:
+            continue
+        body = split_module_functions(dump.text).get(fn)
+        if body:
+            return body
+    return None
 
 
 def _attach_reg_maps(

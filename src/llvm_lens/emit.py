@@ -62,6 +62,8 @@ class ReportPass:
     # mir only: fn -> the spill/reload sites behind that count.
     spill_sites: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
+    # mir only, instruction selection alone: fn -> IR/MIR block correlation.
+    isel_map: dict[str, dict[str, Any]] = field(default_factory=dict)
     asm: str | None = None  # final assembly text, attached to the last mir pass
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
     # Synthetic pre-pipeline card; nothing to diff against, no CFG to show.
@@ -107,6 +109,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
         entry["spills"] = pass_.spills
         entry["spillSites"] = pass_.spill_sites
         entry["regMap"] = pass_.reg_map
+        entry["iselMap"] = pass_.isel_map
         entry["asm"] = pass_.asm
     return entry
 
@@ -137,6 +140,8 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "isInput": p.is_input,
             "lineDelta": _line_delta(p),
             "spillCount": sum(p.spills.values()) if p.spills else None,
+            # Which functions the ISel view can be offered for, if any.
+            "iselFns": sorted(p.isel_map) or None,
             "analysisCounts": {
                 "run": len(p.analyses.get("run", [])),
                 "cached": len(p.analyses.get("cached", [])),

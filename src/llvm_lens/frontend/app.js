@@ -347,6 +347,8 @@ let STATE = {
   diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
   srcFile: null,             // Source view: path of the file shown
   srcLine: null,             // Source view: correlated source line, or null
+  iselBlock: null,           // ISel view: correlated block pair, or null
+  iselRefs: [],              // ISel view: IR lines a machine row names
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
@@ -376,8 +378,17 @@ function isInputCard() {
   return !!(summary && summary.isInput);
 }
 
+// The ISel view exists on one card in the report -- instruction selection --
+// and only for a function it left a correlation for. The manifest says which,
+// so the chip is right before the card's payload has loaded.
+function hasIselMap() {
+  const summary = currentPassSummary();
+  return !!(summary && summary.iselFns && STATE.fn && summary.iselFns.includes(STATE.fn));
+}
+
 function modeAvailable(mode) {
   if (GLOBAL_MODES.includes(mode)) return true;
+  if (mode === "isel") return hasIselMap();
   return !isInputCard() || INPUT_MODES.includes(mode);
 }
 
@@ -906,12 +917,107 @@ function renderMain() {
         : mode === "diff" ? diffPaneHtml()
           : mode === "src" ? srcPaneHtml()
             : mode === "analyses" ? analysesPaneHtml()
-              : irPaneHtml();
+              : mode === "isel" ? iselPaneHtml()
+                : irPaneHtml();
   if (mode === "src") applySrcHighlight("cmapside");
+  if (mode === "isel") applyIselHighlight();
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
   updateViewHead();  // after the panes: it reads what they rendered
+}
+
+/* --- ISel view: LLVM IR <-> machine IR ------------------------------------- */
+
+// Instruction selection is the one pass with a foot in both representations,
+// and LLVM labels its own work: a machine block carries the name of the IR
+// block it was selected from, and a machine memory operand names the IR value
+// it addresses. report._attach_isel ships those pairings against the IR llc
+// actually fed to ISel (its own IR passes have run by then); this draws them.
+function iselPaneHtml() {
+  const empty = (note) => pane("ISEL", "", "", `<div class="cfg-empty">${note}</div>`);
+  const corr = ((CURRENT_PASS || {}).iselMap || {})[STATE.fn];
+  const change = fnChange(STATE.fn);
+  if (!corr || !change) {
+    return empty("(no IR/machine correlation here — this view belongs to instruction "
+      + "selection, the pass where machine IR is born)");
+  }
+  if (STATE.iselBlock != null && STATE.iselBlock >= corr.irBlocks.length) {
+    STATE.iselBlock = null;  // a stale pick from the function shown before
+    STATE.iselRefs = [];
+  }
+
+  const irLines = splitLines(corr.ir);
+  const mirLines = splitLines(change.after);
+  // Line -> the IR block it belongs to; that index is the pair id both sides
+  // are keyed by, so a click on either side can find its counterpart.
+  const irBlockOf = new Array(irLines.length).fill(-1);
+  corr.irBlocks.forEach((b, i) => {
+    for (let line = b.start; line <= b.end && line < irLines.length; line++) irBlockOf[line] = i;
+  });
+  const mirPairOf = new Array(mirLines.length).fill(-1);
+  const inMirBlock = new Array(mirLines.length).fill(false);
+  corr.mirBlocks.forEach(b => {
+    for (let line = b.start; line <= b.end && line < mirLines.length; line++) {
+      inMirBlock[line] = true;
+      if (b.irBlock != null) mirPairOf[line] = b.irBlock;
+    }
+  });
+  const selected = new Set(corr.mirBlocks.map(b => b.irBlock).filter(i => i != null));
+
+  const row = (text, cls, attrs) =>
+    `<div class="urow${cls}"${attrs}><span class="uln">${text[1]}</span>`
+    + `<code class="utext">${highlightIR(text[0]) || "&nbsp;"}</code></div>`;
+
+  const irRows = irLines.map((text, i) => {
+    const pair = irBlockOf[i];
+    // An IR block no machine block claims did not survive selection.
+    const cls = pair < 0 ? "" : selected.has(pair) ? " ilink" : " ilink idrop";
+    return row([text, i + 1], cls, pair < 0 ? ` data-irln="${i}"` : ` data-blk="${pair}" data-irln="${i}"`);
+  }).join("");
+
+  const mirRows = mirLines.map((text, i) => {
+    const pair = mirPairOf[i];
+    // A machine block with no IR name is the backend's own invention.
+    const cls = pair >= 0 ? " ilink" : inMirBlock[i] ? " inew" : "";
+    const refs = corr.refs[String(i)];
+    return row([text, i + 1], cls,
+      (pair >= 0 ? ` data-blk="${pair}"` : "") + (refs ? ` data-refs="${refs.join(",")}"` : ""));
+  }).join("");
+
+  const traced = corr.mirBlocks.filter(b => b.irBlock != null).length;
+  const dropped = corr.irBlocks.length - selected.size;
+  const stat = `${traced}/${corr.mirBlocks.length} machine blocks traced`
+    + ` · ${Object.keys(corr.refs).length} value refs`
+    + (dropped ? ` · ${dropped} IR block${dropped > 1 ? "s" : ""} not selected` : "");
+  const side = (label, body, cls) => `
+    <div class="irside ${cls}">
+      <div class="irside-head"><span>${label}</span></div>
+      <div class="udiff"><div class="ubody">${body}</div></div>
+    </div>`;
+  const body = `
+    <div class="irpair${STATE.orientation === "stack" ? " stacked" : ""}">
+      ${side("llvm ir · entering isel", irRows, "iselir")}
+      <div class="divider" title="drag to resize"></div>
+      ${side("machine ir · after isel", mirRows, "iselmir")}
+    </div>`;
+  return pane("ISEL", "", stat, body);
+}
+
+// Highlight one block pair (and, from a machine row, the IR lines it names) on
+// both sides at once. Class toggling, not a re-render, so neither pane loses
+// its scroll position -- same bargain as applySrcHighlight.
+function applyIselHighlight(scrollTo) {
+  const pair = STATE.iselBlock == null ? null : String(STATE.iselBlock);
+  document.querySelectorAll("#split .urow[data-blk]").forEach(r =>
+    r.classList.toggle("hit", pair !== null && r.dataset.blk === pair));
+  const refs = new Set(STATE.iselRefs || []);
+  document.querySelectorAll("#split .urow[data-irln]").forEach(r =>
+    r.classList.toggle("vref", refs.has(+r.dataset.irln)));
+  if (!scrollTo) return;
+  const target = document.querySelector(`#split .${scrollTo} .urow.vref`)
+    || document.querySelector(`#split .${scrollTo} .urow.hit`);
+  if (target) scrollRowIntoView(target);
 }
 
 /* --- bottom panel ---------------------------------------------------------- */
@@ -1383,6 +1489,22 @@ document.getElementById("split").addEventListener("click", evt => {
   const leaf = evt.target.closest(".ptree-leaf[data-id]");
   if (leaf && STATE.mode === "structure") {
     selectPassFromOverview(+leaf.dataset.id);
+    return;
+  }
+
+  // ISel view: clicking a row on either side selects the block pair it belongs
+  // to on both. A machine row also names IR values, so clicking one points at
+  // the lines that defined them; clicking the same block again clears it.
+  const link = evt.target.closest("#split .urow[data-blk], #split .urow[data-refs]");
+  if (link && STATE.mode === "isel") {
+    const pair = link.dataset.blk == null ? null : +link.dataset.blk;
+    const refs = link.dataset.refs ? link.dataset.refs.split(",").map(Number) : [];
+    const repeat = STATE.iselBlock === pair
+      && String(STATE.iselRefs) === String(refs);
+    STATE.iselBlock = repeat ? null : pair;
+    STATE.iselRefs = repeat ? [] : refs;
+    // Scroll the *other* pane: the side you clicked is already in view.
+    applyIselHighlight(link.closest(".iselmir") ? "iselir" : "iselmir");
     return;
   }
 

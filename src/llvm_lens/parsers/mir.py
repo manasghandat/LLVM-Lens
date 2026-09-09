@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 
 # Machine dump header; note the "# " prefix and trailing ":" vs IR headers.
 MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*\*:$")
+# The same header without the "# " prefix and the trailing ":" is an IR dump.
+IR_HEADER_RE = re.compile(r"^\*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*\*$")
+# -time-passes writes its summary into the same stream; it ends the last dump.
+REPORT_RE = re.compile(r"^={3,}-{3,}")
 FUNC_START_RE = re.compile(r"^# Machine code for function (\S+): (.+)$")
 FUNC_END_RE = re.compile(r"^# End machine code for function (\S+)\.$")
 LIVE_INS_RE = re.compile(r"^Function Live Ins: (.+)$")
@@ -141,6 +145,41 @@ def _parse_function(lines: list[str]) -> MachineFunction:
         physregs=frozenset(physregs),
         stack_slots=frozenset(f"{kind}.{num}" for kind, num in slots),
     )
+
+
+@dataclass(frozen=True)
+class IrDump:
+    pass_name: str
+    pass_id: str
+    text: str
+    line: int = 0  # 1-based line of the dump header in the stream
+
+
+def parse_ir_dumps(stderr: str) -> list[IrDump]:
+    dumps: list[IrDump] = []
+    header: tuple[str, str, int] | None = None
+    body: list[str] = []
+
+    def flush() -> None:
+        nonlocal header
+        if header is not None:
+            dumps.append(IrDump(header[0], header[1], "\n".join(body), header[2]))
+        header = None
+
+    for line_no, line in enumerate(stderr.splitlines(), start=1):
+        match = IR_HEADER_RE.match(line)
+        if match:
+            flush()
+            header, body = (match.group(1), match.group(2), line_no), []
+            continue
+        if header is None:
+            continue
+        if MACHINE_HEADER_RE.match(line) or REPORT_RE.match(line):
+            flush()
+            continue
+        body.append(line)
+    flush()
+    return dumps
 
 
 def parse_mir_snapshots(stderr: str) -> list[MirSnapshot]:
