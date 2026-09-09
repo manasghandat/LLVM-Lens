@@ -462,6 +462,13 @@ table.grid th { background: var(--panel2); color: var(--dim); font-size: 9px;
   letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500;
   text-align: left; padding: 4px 8px; border: 1px solid var(--line); }
 table.grid td { border: 1px solid var(--line); padding: 3px 8px; font-size: 12px; }
+/* A spill costs a store; a reload is the price already paid. Colour the
+   stores so a table of both reads as "here is what went to memory". */
+table.grid td.spill { color: var(--warn); }
+table.grid td.instr { white-space: pre; }
+/* MIR instructions are far wider than the panel: scroll the table, never
+   the page. */
+.tscroll { overflow-x: auto; max-height: 24vh; }
 
 .hidden { display: none; }
 

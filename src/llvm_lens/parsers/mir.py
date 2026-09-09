@@ -24,6 +24,16 @@ RELOAD_RE = re.compile(r":: \(load .* from %stack\.(\d+)\)")
 
 
 @dataclass(frozen=True)
+class Spill:
+    """One store to / load from a stack slot, with the site it happened at."""
+
+    kind: str  # "spill" | "reload"
+    slot: str  # stack slot number, as printed ("%stack.3" -> "3")
+    block: str  # "bb.2"
+    text: str  # the instruction itself, stripped
+
+
+@dataclass(frozen=True)
 class MachineBlock:
     name: str  # "bb.0"
     ir_block: str | None  # "2" for "%ir-block.2", None if unnamed
@@ -37,7 +47,7 @@ class MachineFunction:
     properties: str
     live_ins: str
     blocks: tuple[MachineBlock, ...] = ()
-    spills: tuple[tuple[str, str], ...] = ()  # (kind, slot) kind in spill|reload
+    spills: tuple[Spill, ...] = ()
     vregs: frozenset[str] = frozenset()
     physregs: frozenset[str] = frozenset()
     stack_slots: frozenset[str] = frozenset()
@@ -74,7 +84,7 @@ def _parse_function(lines: list[str]) -> MachineFunction:
     name, properties = FUNC_START_RE.match(lines[0]).groups()  # type: ignore[union-attr]
     live_ins = ""
     blocks: list[MachineBlock] = []
-    spills: list[tuple[str, str]] = []
+    spills: list[Spill] = []
     vregs: set[str] = set()
     physregs: set[str] = set()
     slots: set[str] = set()
@@ -113,9 +123,9 @@ def _parse_function(lines: list[str]) -> MachineFunction:
         block_lines.append(line)
         # Instruction-level scanning.
         for spill_slot in SPILL_RE.findall(line):
-            spills.append(("spill", spill_slot))
+            spills.append(Spill("spill", spill_slot, block_name, line.strip()))
         for reload_slot in RELOAD_RE.findall(line):
-            spills.append(("reload", reload_slot))
+            spills.append(Spill("reload", reload_slot, block_name, line.strip()))
         vregs.update(VREG_RE.findall(line))
         physregs.update(PHYSREG_RE.findall(line))
         slots.update(STACK_SLOT_RE.findall(line))

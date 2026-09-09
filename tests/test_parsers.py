@@ -312,9 +312,35 @@ def test_parse_mir_spills_carried_values(capture):
     snapshots = parse_mir_snapshots(capture("llc-carry.stderr"))
     spill_passes = [s for s in snapshots if any(f.spill_count for f in s.functions.values())]
     assert spill_passes, "expected spill candidates in carry fixture"
-    kinds = {kind for s in spill_passes for f in s.functions.values() for kind, _ in f.spills}
-    assert "spill" in kinds
-    assert "reload" in kinds
+    sites = [sp for s in spill_passes for f in s.functions.values() for sp in f.spills]
+    assert "spill" in {sp.kind for sp in sites}
+    assert "reload" in {sp.kind for sp in sites}
+    # every site keeps where it happened, so the viewer can list it
+    assert all(sp.block.startswith("bb.") and sp.text for sp in sites)
+
+
+def test_parse_mir_spill_sites_carry_block_and_instruction():
+    """A spill is only actionable with its site: which slot, which block, and
+    the instruction that moved the value."""
+    dump = (
+        "# *** IR Dump After Virtual Register Rewriter (virtregrewriter) ***:\n"
+        "# Machine code for function main: NoPHIs, TracksLiveness\n"
+        "Function Live Ins: $edi in %0\n"
+        "bb.0 (%ir-block.2):\n"
+        "  MOV64mr %stack.1, 1, $noreg, 0, $noreg, $rax "
+        ":: (store (s64) into %stack.1)\n"
+        "bb.1 (%ir-block.3):\n"
+        "  $rcx = MOV64rm %stack.1, 1, $noreg, 0, $noreg "
+        ":: (load (s64) from %stack.1)\n"
+        "# End machine code for function main.\n"
+    )
+    mf = parse_mir_snapshots(dump)[0].functions["main"]
+    assert mf.spill_count == 2
+    store, load = mf.spills
+    assert (store.kind, store.slot, store.block) == ("spill", "1", "bb.0")
+    assert store.text.startswith("MOV64mr %stack.1")
+    assert (load.kind, load.slot, load.block) == ("reload", "1", "bb.1")
+    assert load.text.startswith("$rcx = MOV64rm")
 
 
 def test_vreg_to_physreg_around_rewriter(capture):

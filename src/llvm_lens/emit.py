@@ -59,6 +59,8 @@ class ReportPass:
     analyses: dict[str, list[str]] = field(default_factory=dict)  # run/cached/invalidated
     log: str = ""
     spills: dict[str, int] = field(default_factory=dict)  # mir only: fn -> count
+    # mir only: fn -> the spill/reload sites behind that count.
+    spill_sites: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     reg_map: dict[str, dict[str, str]] = field(default_factory=dict)  # mir only
     asm: str | None = None  # final assembly text, attached to the last mir pass
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
@@ -103,6 +105,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
     }
     if pass_.lane == "mir":
         entry["spills"] = pass_.spills
+        entry["spillSites"] = pass_.spill_sites
         entry["regMap"] = pass_.reg_map
         entry["asm"] = pass_.asm
     return entry

@@ -392,6 +392,7 @@ def build_lane_b(
         fn_changes: dict[str, FnChange] = {}
         dots: dict[str, tuple[str | None, str | None]] = {}
         spills: dict[str, int] = {}
+        spill_sites: dict[str, list[dict[str, str]]] = {}
         src_maps: dict[str, LineMap] = {}
         for snapshot in group:
             fn = next(iter(snapshot.functions))
@@ -407,6 +408,11 @@ def build_lane_b(
                 machine_cfg_dot(machine_function),
             )
             spills[fn] = machine_function.spill_count
+            if machine_function.spills:
+                spill_sites[fn] = [
+                    {"kind": s.kind, "slot": s.slot, "block": s.block, "text": s.text}
+                    for s in machine_function.spills
+                ]
             if mir_table:
                 src_maps[fn] = map_lines(machine_function.text, mir_table, MIR_REF_RE)
         for snapshot in group:
@@ -430,6 +436,7 @@ def build_lane_b(
             functions=fn_changes,
             dots=dots,
             spills=spills,
+            spill_sites=spill_sites,
             log=_mir_log(stderr, first_line, end_line),
             time_ms=summary_ms.get(group[0].pass_name, anchor_ms.get(run_index - 1)),
             is_custom=_is_custom(group[0].pass_name, custom_passes)

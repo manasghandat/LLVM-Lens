@@ -3,7 +3,8 @@
  * collapsible. Right: the main view, one of three -- CFG (cytoscape graphs),
  * Diff (unified/git-style: hunks, line numbers, +/- markers) or IR (the whole
  * before/after snapshots, side by side or stacked with a draggable divider)
- * -- plus a collapsible bottom panel with Log / Analyses / RegMap / Asm tabs.
+ * -- plus a collapsible bottom panel with Log / Analyses / RegMap / Spills /
+ * Asm tabs.
  *
  * Data: fetch('data/manifest.json') first; browsers block fetch() on
  * file:// URLs, so we fall back to the sibling .js wrappers emitted by
@@ -924,6 +925,9 @@ function bottomTabs() {
   // functions it assigned: offering the tab anywhere else promises a table that
   // is not there.
   if (CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn]) tabs.push("RegMap");
+  // Same rule for spills: a function the allocator kept in registers has no
+  // sites to list, and every pass before the allocator has none at all.
+  if (CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []).length) tabs.push("Spills");
   if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push("Asm");
   return tabs;
 }
@@ -974,6 +978,21 @@ function bottomBodyHtml() {
       + Object.entries(map)
         .map(([v, p]) => `<tr><td>%${escapeHtml(v)}</td><td>${escapeHtml(p)}</td></tr>`)
         .join("") + `</table>`;
+  }
+  if (STATE.bottomTab === "Spills") {
+    // The selected function's stack traffic as it stands after this pass: the
+    // row badge counts these, this is what it counted. Every site keeps its
+    // block and its instruction, so a spill can be found in the MIR pane.
+    const sites = (d.spillSites || {})[STATE.fn] || [];
+    if (!sites.length) return "";
+    const stores = sites.filter(s => s.kind === "spill").length;
+    return `<h3>${escapeHtml(STATE.fn)} (${stores} spill, ${sites.length - stores} reload)</h3>
+      <div class="tscroll"><table class="grid">
+        <tr><th>kind</th><th>slot</th><th>block</th><th>instruction</th></tr>`
+      + sites.map(s => `<tr><td class="${escapeHtml(s.kind)}">${escapeHtml(s.kind)}</td>`
+        + `<td>%stack.${escapeHtml(s.slot)}</td><td>${escapeHtml(s.block)}</td>`
+        + `<td class="instr">${escapeHtml(s.text)}</td></tr>`).join("")
+      + `</table></div>`;
   }
   if (STATE.bottomTab === "Asm") return `<pre class="raw">${escapeHtml(d.asm)}</pre>`;
   return "";
