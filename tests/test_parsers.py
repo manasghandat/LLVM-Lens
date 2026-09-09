@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from llvm_lens.parsers.debug_pass_manager import parse_pass_runs
-from llvm_lens.parsers.legacy_pass_structure import parse_pass_structure
+from llvm_lens.parsers.legacy_pass_structure import (
+    analyses_by_pass, build_tree, parse_pass_structure,
+)
 from llvm_lens.parsers.mir import parse_mir_snapshots, vreg_to_physreg
 from llvm_lens.parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
@@ -228,6 +230,60 @@ def test_parse_pass_structure_fixture(capture):
     assert by_name["Pre-ISel Intrinsic Lowering"].depth == 2
     # structure tree uses display names, e.g. "X86 DAG->DAG Instruction Selection"
     assert "X86 DAG->DAG Instruction Selection" in by_name
+
+
+# One -print-after-all structure block: a pass the PM prints for is followed by
+# a printer node, an analysis it scheduled to satisfy a requirement is not.
+STRUCTURE = """Pass Arguments:  -x86-isel -machinedomtree
+  ModulePass Manager
+    FunctionPass Manager
+      MachineDominator Tree Construction
+      Machine Natural Loop Construction
+      Early Machine Loop Invariant Code Motion
+      MachineFunction Printer
+      Machine Common Subexpression Elimination
+      MachineFunction Printer
+      MachineDominator Tree Construction
+      Machine code sinking
+      MachineFunction Printer
+# *** IR Dump After Machine code sinking (machine-sink) ***:
+"""
+
+
+def test_analyses_by_pass_attributes_required_analyses():
+    nodes, _ = parse_pass_structure(STRUCTURE)
+    by_pass = analyses_by_pass(nodes)
+    # The analyses scheduled ahead of a pass are the ones it forced computed.
+    assert by_pass["Early Machine Loop Invariant Code Motion"] == [
+        "MachineDominator Tree Construction", "Machine Natural Loop Construction",
+    ]
+    # A pass that required nothing new gets an empty list, not a missing key.
+    assert by_pass["Machine Common Subexpression Elimination"] == []
+    # Scheduled a second time: something in between invalidated it.
+    assert by_pass["Machine code sinking"] == [
+        "MachineDominator Tree Construction (recomputed)",
+    ]
+    # Printer passes are instrumentation, not pipeline: never analyses, never rows.
+    assert "MachineFunction Printer" not in by_pass
+    assert not any(
+        "Printer" in str(child["name"])
+        for child in _leaves(build_tree(nodes, {}))
+    )
+
+
+def _leaves(node):
+    if not node["children"]:
+        yield node
+    for child in node["children"]:
+        yield from _leaves(child)
+
+
+def test_analyses_by_pass_without_printers_is_empty():
+    # A capture taken without -print-after-all has no printer nodes to go by.
+    nodes, _ = parse_pass_structure(
+        "\n".join(l for l in STRUCTURE.splitlines() if "Printer" not in l)
+    )
+    assert analyses_by_pass(nodes) == {}
 
 
 # --- mir -----------------------------------------------------------------------

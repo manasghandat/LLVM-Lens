@@ -417,9 +417,8 @@ function passVisible(p, onlyChanged) {
 }
 
 // Lines added / removed across every function the pass touched (emit.py
-// _line_delta). This is the one per-pass number both lanes can show: llc's
-// legacy pass manager reports no analyses, so the machine rows used to read
-// "+0 -0" for every pass. Input cards carry no delta -- nothing precedes them.
+// _line_delta), the one per-pass number both lanes measure the same way.
+// Input cards carry no delta -- nothing precedes them.
 function lineDeltaHtml(p) {
   const d = p.lineDelta;
   if (!d) return '<span class="stat"></span>';
@@ -576,6 +575,11 @@ function cfgPaneHtml() {
 }
 
 const ANALYSIS_TYPES = ["pdt", "cdg", "ddg", "pdg", "mdg", "lnt", "cg"];
+// Bottom-panel Analyses buckets, in display order. The manifest also carries
+// lane A's "cached" list -- an analysis the pass asked for and got for free --
+// which is bookkeeping about the pass manager rather than about the pass, and
+// is not shown.
+const ANALYSIS_BUCKETS = ["run", "invalidated"];
 const ANALYSIS_LABELS = {
   pdt: "PDT", cdg: "CDG", ddg: "DDG", pdg: "PDG", mdg: "MDG", lnt: "LNT", cg: "Call graph",
 };
@@ -939,15 +943,20 @@ function renderBottom() {
 function bottomBodyHtml() {
   const d = CURRENT_PASS;
   if (!d) return '<p class="cfg-empty">(select a pass)</p>';
+  // Log and Analyses both go empty for plenty of passes: an empty panel reads
+  // as "nothing here", where a placeholder line reads as content.
   if (STATE.bottomTab === "Log") {
-    return `<pre class="raw">${escapeHtml(d.log || "(no attributed output)")}</pre>`;
+    return d.log ? `<pre class="raw">${escapeHtml(d.log)}</pre>` : "";
   }
   if (STATE.bottomTab === "Analyses") {
     const a = d.analyses || {};
-    return [["run", a.run], ["cached", a.cached], ["invalidated", a.invalidated]]
-      .map(([label, list]) => `
-        <h3>${label} (${(list || []).length})</h3>
-        <pre class="raw">${escapeHtml((list || []).join("\n") || "(none)")}</pre>`)
+    // Lane A's new PM reports both buckets; lane B's legacy PM only ever shows
+    // an analysis it had to compute, so a machine card carries "run" alone.
+    return ANALYSIS_BUCKETS
+      .filter(bucket => (a[bucket] || []).length)
+      .map(bucket => `
+        <h3>${bucket} (${a[bucket].length})</h3>
+        <pre class="raw">${escapeHtml(a[bucket].join("\n"))}</pre>`)
       .join("");
   }
   if (STATE.bottomTab === "RegMap") {
@@ -1366,6 +1375,7 @@ document.getElementById("split").addEventListener("click", evt => {
 document.getElementById("bottomChev").addEventListener("click", () => {
   STATE.bottomOpen = !STATE.bottomOpen;
   renderBottom();
+  resizeGraphs();  // the split view just took (or gave back) the panel's height
 });
 
 // Rail collapse / expand.

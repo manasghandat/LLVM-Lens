@@ -440,6 +440,12 @@ body.rail-collapsed .rail-edge { display: none; }
 .vtab:hover { color: var(--ink); }
 .vtab.active { color: var(--ink); border-bottom-color: var(--trace); }
 .bpanel-body { padding: 10px 12px; overflow: auto; max-height: 32vh; min-height: 80px; }
+/* Collapsed, or open on a tab with nothing to show: the body is empty, and an
+   empty body takes no room -- no padding box under the head -- so the panel is
+   just its own head and the split view above it drops to the bottom of the
+   window. */
+.bpanel-body:empty { display: none; }
+.bpanel.open:has(.bpanel-body:empty) .bpanel-head { border-bottom: 0; }
 .bpanel-body .ln { white-space: pre; color: var(--dim); font-size: 12px; }
 
 /* --- shared raw content ----------------------------------------------------- */

@@ -6,6 +6,10 @@ import re
 from dataclasses import dataclass
 
 PASS_ARGS_RE = re.compile(r"^Pass Arguments: ?(.*)$")
+PRINTER_NAMES = frozenset({
+    "Print Module IR", "Print Function IR", "Print Loop IR", "Print MIR",
+    "MachineFunction Printer", "Machine Function Printer", "MIR Printer",
+})
 # First -print-after-all dump header: the end of the structure block.
 DUMP_HEADER_RE = re.compile(r"^#? ?\*\*\* IR Dump ")
 
@@ -46,6 +50,32 @@ def _is_manager(name: str) -> bool:
     return "Manager" in name
 
 
+def _is_printer(name: str) -> bool:
+    return name in PRINTER_NAMES
+
+
+def analyses_by_pass(nodes: list[PassNode]) -> dict[str, list[str]]:
+    leaves = [node for node in nodes if not _is_manager(node.name)]
+    printer = [_is_printer(node.name) for node in leaves]
+    by_pass: dict[str, list[str]] = {}
+    pending: list[str] = []
+    computed: set[str] = set()
+    for index, node in enumerate(leaves):
+        if printer[index]:
+            continue
+        if not (index + 1 < len(leaves) and printer[index + 1]):
+            pending.append(node.name)
+            continue
+        bucket = by_pass.setdefault(node.name, [])
+        for name in pending:
+            label = f"{name} (recomputed)" if name in computed else name
+            computed.add(name)
+            if label not in bucket:  # a pass scheduled twice merges into one card
+                bucket.append(label)
+        pending = []
+    return by_pass
+
+
 def build_tree(
     nodes: list[PassNode],
     passes_by_name: dict[str, int],
@@ -58,6 +88,8 @@ def build_tree(
     stack: list[tuple[int, dict[str, object]]] = [(-1, root)]
     seen: set[str] = set()  # leaf names already emitted (dedup)
     for node in nodes:
+        if _is_printer(node.name):
+            continue  # -print-after-all's own printer passes: not pipeline
         while stack[-1][0] >= node.depth:
             stack.pop()
         parent = stack[-1][1]

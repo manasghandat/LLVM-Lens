@@ -16,7 +16,7 @@ from .compile import CompiledSource, compile_to_ir
 from .diff import FnChange
 from .emit import ReportPass, emit_report
 from .parsers.debug_pass_manager import parse_pass_runs
-from .parsers.legacy_pass_structure import PassNode, build_tree, parse_pass_structure
+from .parsers.legacy_pass_structure import PassNode, analyses_by_pass, build_tree, parse_pass_structure
 from .parsers.mir import parse_mir_snapshots, vreg_to_physreg
 from .parsers.print_changed import (
     parse_changed_ir, split_module_functions, strip_module_noise,
@@ -364,6 +364,7 @@ def build_lane_b(
     """Assemble Lane B (llc) passes from captured stderr. Returns (passes, structure_nodes, pass_arguments)."""
     snapshots = parse_mir_snapshots(stderr)
     nodes, pass_arguments = parse_pass_structure(stderr)
+    machine_analyses = analyses_by_pass(nodes)
     time_blocks = parse_time_passes(stderr)
 
     # Group snapshots by pass id, preserving first-seen (pipeline) order.
@@ -433,6 +434,7 @@ def build_lane_b(
             time_ms=summary_ms.get(group[0].pass_name, anchor_ms.get(run_index - 1)),
             is_custom=_is_custom(group[0].pass_name, custom_passes)
                       or _is_custom(pass_id, custom_passes),
+            analyses={"run": machine_analyses.get(group[0].pass_name, [])},
             src_maps=src_maps,
         ))
 
