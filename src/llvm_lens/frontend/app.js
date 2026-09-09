@@ -500,6 +500,7 @@ function renderFnList() {
       renderFnList();
       renderMain();
       renderCtx();
+      renderBottom();  // the RegMap table is per function, so it moves too
     }));
 }
 
@@ -919,7 +920,10 @@ function bottomTabs() {
   // which says where the module came from, has anything to show.
   if (isInputCard()) return ["Log"];
   const tabs = ["Log", "Analyses"];
-  if (CURRENT_PASS && CURRENT_PASS.lane === "mir") tabs.push("RegMap");
+  // Only the register allocator's card carries assignments, and only for the
+  // functions it assigned: offering the tab anywhere else promises a table that
+  // is not there.
+  if (CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn]) tabs.push("RegMap");
   if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push("Asm");
   return tabs;
 }
@@ -960,14 +964,16 @@ function bottomBodyHtml() {
       .join("");
   }
   if (STATE.bottomTab === "RegMap") {
+    // The table is whichever function the functions panel is on: picking a
+    // function re-renders this panel (renderFnList's click handler), so the
+    // allocator's other functions are one click away rather than absent.
     const map = (d.regMap || {})[STATE.fn];
-    if (!map) {
-      return `<p class="cfg-empty">(no vreg assignments for ${STATE.fn ? escapeHtml(STATE.fn) : "the selected function"})</p>`;
-    }
-    return `<table class="grid"><tr><th>vreg</th><th>physreg / slot</th></tr>`
+    if (!map) return "";
+    return `<h3>${escapeHtml(STATE.fn)} (${Object.keys(map).length})</h3>
+      <table class="grid"><tr><th>vreg</th><th>physreg / slot</th></tr>`
       + Object.entries(map)
         .map(([v, p]) => `<tr><td>%${escapeHtml(v)}</td><td>${escapeHtml(p)}</td></tr>`)
-        .join("") + "</table>";
+        .join("") + `</table>`;
   }
   if (STATE.bottomTab === "Asm") return `<pre class="raw">${escapeHtml(d.asm)}</pre>`;
   return "";
