@@ -13,6 +13,7 @@ from typing import Any
 from .analyses import compute_analyses
 from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
+from .config import load_config
 from .diff import FnChange
 from .emit import MODULE_FN, ReportPass, emit_report
 from .isel import correlate
@@ -627,8 +628,13 @@ def build_report(
     llvm_version: int | None = None,
     timeout: float | None = None,
     source_map: bool = True,
+    ai_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the full pipeline and emit the report. Returns a summary dict."""
+    """Run the full pipeline and emit the report. Returns a summary dict.
+
+    *ai_config* is the stored provider/key for the report's ask-AI panel.
+    None (the default) reads ~/.llvm_lens_config; pass {} to embed nothing.
+    """
     out = Path(output)
     out.mkdir(parents=True, exist_ok=True)
     raw = out / "raw"
@@ -735,9 +741,11 @@ def build_report(
     if llc_result and llc_result.failed:
         metadata["errors"]["llc"] = _tail(llc_result.stderr_path.read_text(errors="replace"))
 
+    resolved_ai = load_config() if ai_config is None else ai_config
     manifest = emit_report(
         out, passes=all_passes, metadata=metadata,
         frontend_dir=default_frontend_dir(),
+        ai_config=resolved_ai,
     )
 
     return {
@@ -748,4 +756,6 @@ def build_report(
         "totalTimeMs": round(total_ms, 1),
         "optCrashed": opt_result.failed,
         "llcCrashed": bool(llc_result and llc_result.failed),
+        # True when the ask-AI credentials landed in the report directory.
+        "aiEmbedded": bool((resolved_ai or {}).get("api_key")),
     }

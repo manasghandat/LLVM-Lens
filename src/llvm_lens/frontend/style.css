@@ -138,6 +138,12 @@ button { font-family: var(--mono); }
 }
 body.rail-collapsed .workspace { grid-template-columns: 30px 1fr; gap: 8px; }
 
+/* ask AI takes a third track rather than overlaying the split view, so the
+   panes keep their width and cytoscape only needs the resize it already does
+   on any layout change. */
+body.ai-open .workspace { grid-template-columns: 22% 1fr 400px; }
+body.rail-collapsed.ai-open .workspace { grid-template-columns: 30px 1fr 400px; }
+
 /* --- left rail ------------------------------------------------------------ */
 
 .rail { position: relative; display: flex; flex-direction: column; gap: 10px;
@@ -540,6 +546,111 @@ table.grid td.instr { white-space: pre; }
 .ptree-time { color: var(--faint); font-size: 10px; flex: none;
   font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
 
+/* --- ask AI panel ----------------------------------------------------------- */
+
+#aiBtn { flex: none; border: 1px solid var(--line); }
+
+.aipanel { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 2px; }
+.aipanel[hidden] { display: none; }
+
+.ai-head { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  border-bottom: 1px solid var(--line); flex: none; }
+.ai-title { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); }
+/* which provider+model is actually answering, in the header where the
+   question of "who am I talking to" belongs */
+.ai-model { flex: 1; min-width: 0; text-align: right; color: var(--dim);
+  font-size: 10px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+/* A square target per icon rather than padding around the glyph: at the
+   topbar's 11px these three (gear, erase, close) came out cramped and easy to
+   miss, and they are the whole of the panel's controls. Sized to match the
+   header row rather than the text beside it, so the glyph has room to breathe. */
+.ai-icon { flex: none; display: inline-flex; align-items: center;
+  justify-content: center; width: 28px; height: 28px; padding: 0;
+  font-size: 16px; line-height: 1; border: 1px solid transparent; }
+.ai-icon:hover { border-color: var(--line); }
+
+.ai-settings { display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 10px; border-bottom: 1px solid var(--line); flex: none;
+  background: var(--panel2); }
+.ai-settings[hidden] { display: none; }
+.ai-field { display: flex; align-items: center; gap: 8px; }
+.ai-field[hidden] { display: none; }
+.ai-field > span { width: 62px; flex: none; color: var(--faint); font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; }
+.ai-field input, .ai-field select { flex: 1; min-width: 0; background: var(--bg);
+  color: var(--ink); border: 1px solid var(--line); border-radius: 2px;
+  padding: 4px 8px; font: 11px var(--mono); }
+.ai-field input:focus-visible, .ai-field select:focus-visible {
+  outline-offset: 0; border-color: var(--trace); }
+.ai-field-note { color: var(--faint); font-size: 10px; line-height: 1.5; }
+.ai-field-note code { color: var(--dim); }
+.ai-field-note[hidden] { display: none; }
+.ai-save-row { display: flex; gap: 6px; align-self: flex-end; }
+.ai-save { border: 1px solid var(--line); }
+/* Quieter than save: removing a key is not the thing the form is for. */
+#aiForget { border: 1px solid var(--line); color: var(--faint); }
+#aiForget[hidden] { display: none; }
+#aiForget:hover { color: var(--warn); border-color: var(--warn); }
+
+.ai-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 10px;
+  display: flex; flex-direction: column; gap: 10px; }
+
+.ai-msg { border-left: 2px solid var(--line-strong); padding-left: 8px;
+  min-width: 0; }
+.ai-msg.me { border-left-color: var(--trace); }
+.ai-role { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 3px; }
+.ai-text { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.ai-msg.me .ai-text { color: var(--dim); }
+.ai-wait { color: var(--faint); }
+.ai-hint { color: var(--faint); font-size: 11px; line-height: 1.6;
+  border: 1px dashed var(--line); border-radius: 2px; padding: 10px; }
+.ai-hint code { color: var(--dim); }
+
+/* answers carry IR/MIR, so they get the report's own tokenizer and a well */
+.ai-code { margin: 6px 0 0; padding: 8px 10px; background: var(--well);
+  border: 1px solid var(--line); border-radius: 2px; overflow-x: auto;
+  font: 11.5px/1.6 var(--mono); white-space: pre; }
+.ai-inline { background: var(--panel2); border-radius: 2px; padding: 0 3px;
+  font-size: 11.5px; }
+
+.ai-err { border-left: 2px solid var(--del); padding-left: 8px;
+  color: var(--del); font-size: 11.5px; line-height: 1.6;
+  overflow-wrap: anywhere; }
+
+/* A question held back because its context would have been cut. Speculative
+   (--warn), unlike the error above: nothing went wrong, a decision is wanted. */
+.ai-cut { color: var(--warn); font-size: 10px; margin-top: 4px;
+  overflow-wrap: anywhere; }
+.ai-ask { border: 1px solid var(--line-strong); border-left: 2px solid var(--warn);
+  border-radius: 2px; padding: 9px 10px; background: var(--panel2); }
+.ai-ask-title { font-size: 11.5px; color: var(--ink); margin-bottom: 4px; }
+.ai-ask-note { font-size: 11px; line-height: 1.6; color: var(--dim);
+  overflow-wrap: anywhere; }
+.ai-ask-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ai-ask-btn { font: inherit; font-size: 11px; color: var(--dim); cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: 2px; padding: 3px 8px; }
+.ai-ask-btn:hover { color: var(--ink); border-color: var(--trace); }
+.ai-ask-btn.go { color: var(--trace); border-color: var(--trace); }
+.ai-ask-btn.go:hover { background: var(--panel2); }
+
+.ai-foot { flex: none; border-top: 1px solid var(--line); padding: 8px 10px 10px; }
+.ai-ctx { color: var(--faint); font-size: 10px; margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-composer { display: flex; align-items: flex-end; gap: 8px; }
+#aiPrompt { flex: 1; min-width: 0; resize: none; background: var(--bg);
+  color: var(--ink); border: 1px solid var(--line); border-radius: 2px;
+  padding: 6px 8px; font: 11.5px/1.5 var(--mono); }
+#aiPrompt::placeholder { color: var(--faint); }
+#aiPrompt:focus-visible { outline-offset: 0; border-color: var(--trace); }
+#aiSend { flex: none; border: 1px solid var(--line); }
+#aiSend:hover { border-color: var(--trace); }
+
 /* --- motion & response ------------------------------------------------------ */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -551,6 +662,11 @@ table.grid td.instr { white-space: pre; }
   body { overflow: auto; }
   .workspace { grid-template-columns: 1fr; height: auto; }
   body.rail-collapsed .workspace { grid-template-columns: 1fr; }
+  body.ai-open .workspace,
+  body.rail-collapsed.ai-open .workspace { grid-template-columns: 1fr; }
+  /* the drawer stacks under the split view here, so give it a usable height */
+  .aipanel { min-height: 420px; }
+  .ai-messages { max-height: 50vh; }
   .rail-strip { display: none !important; }
   .rail-panels { display: flex !important; overflow: visible; }
   .rail-edge { display: none !important; }
