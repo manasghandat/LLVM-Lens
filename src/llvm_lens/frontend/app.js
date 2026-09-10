@@ -472,9 +472,16 @@ async function selectPass(id) {
   const data = await loadPass(id);
   if (STATE.passId !== id) return;  // user switched passes while loading
   CURRENT_PASS = data;
-  // Default to the first changed function, else the first function.
+  // Default to the first changed function, else the first function. Prefer a
+  // real function over the "[module]" pseudo-row: a module pass (IPSCCP,
+  // GlobalOpt, ...) marks "[module]" changed when it rewrites a body, but that
+  // row is a whole-module diff with no CFG, so land on the function whose
+  // before/after and CFG actually show the rewrite. "[module]" stays the
+  // default when only it changed (a module-level edit, e.g. a global).
   const names = fnNames();
-  STATE.fn = names.find(f => fnChange(f) && fnChange(f).changed) || names[0] || null;
+  const changed = (f) => fnChange(f) && fnChange(f).changed;
+  STATE.fn = names.find(f => f !== "[module]" && changed(f))
+    || names.find(changed) || names[0] || null;
   renderFnList();
   renderMain();
   renderBottom();

@@ -12,7 +12,7 @@ from llvm_lens.report import (
     BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
     build_commands, build_input_pass, build_lane_a, build_lane_b, build_report,
 )
-from llvm_lens.parsers.print_changed import strip_module_noise
+from llvm_lens.parsers.print_changed import split_module_functions, strip_module_noise
 from llvm_lens.sourcemap import SourceRef
 from tests.conftest import SAMPLE_C
 
@@ -128,8 +128,24 @@ def test_manifest_carries_line_deltas_for_both_lanes(tmp_path):
         time_ms=None, changed=True, is_input=True,
         functions={MODULE_FN: FnChange(MODULE_FN, "", "whole\nmodule\n")},
     )
+    # A module pass is attributed per function AND carries the whole-module row.
+    # The card's delta is the module row alone (it covers the functions too), so
+    # counting the per-function rows as well would double count.
+    module_pass = ReportPass(
+        id=4, lane="ir", name="GlobalOptPass", pass_id="GlobalOptPass", run_index=2,
+        time_ms=None, changed=True,
+        functions={
+            MODULE_FN: FnChange(
+                MODULE_FN,
+                "define i32 @a() {\n  ret i32 1\n}\n\ndefine i32 @g() {\n  ret i32 2\n}\n",
+                "define i32 @a() {\n  ret i32 3\n}\n\ndefine i32 @g() {\n  ret i32 2\n}\n"),
+            "a": FnChange("a", "define i32 @a() {\n  ret i32 1\n}\n",
+                          "define i32 @a() {\n  ret i32 3\n}\n"),
+            "g": FnChange("g", "x\n", "x\n"),
+        },
+    )
     manifest = emit_report(
-        tmp_path / "report", passes=[ir, mir, card],
+        tmp_path / "report", passes=[ir, mir, card, module_pass],
         metadata={}, frontend_dir=FRONTEND,
     )
     deltas = {p["name"]: p["lineDelta"] for p in json.loads(manifest.read_text())["passes"]}
@@ -138,6 +154,9 @@ def test_manifest_carries_line_deltas_for_both_lanes(tmp_path):
     assert deltas["Greedy"] == {"added": 2, "removed": 0}
     # Nothing precedes an input card, so its whole module is not "added".
     assert deltas[BACKEND_INPUT_PASS_NAME] is None
+    # The module row's diff already contains "a"'s rewrite; per-function rows on
+    # top would overstate it.
+    assert deltas["GlobalOptPass"] == {"added": 1, "removed": 1}
 
 
 def test_emit_report_serializes_is_custom(tmp_path):
@@ -368,6 +387,77 @@ def test_build_lane_a_carves_the_named_entity_out_of_a_module_scope_dump():
     module = combine.functions["[module]"].after
     assert "define i32 @a()" in module and "define i32 @b()" in module
     assert "!DIFile" not in module and "ModuleID" not in module
+
+
+def test_build_lane_a_attributes_module_scope_bodies_to_their_functions():
+    # A whole-module dump (IPSCCPPass, GlobalOpt, DeadArgumentElimination, ...)
+    # names only "[module]", yet the pass can rewrite one body. That change must
+    # be credited to the function -- a real before/after and a changed CFG --
+    # not buried in the module row where no per-function diff or CFG shows it.
+    passes = build_lane_a(
+        _module_scope_dump("IPSCCPPass", "[module]", "1"),
+        input_ir=SEED_MODULE,
+    )
+    card = next(p for p in passes if p.name == "IPSCCPPass")
+    assert set(card.functions) == {"[module]", "a", "b"}
+    assert card.functions["a"].changed
+    assert card.functions["a"].before == "define i32 @a() {\n  ret i32 0\n}"
+    assert card.functions["a"].after == "define i32 @a() {\n  ret i32 1\n}"
+    assert card.dots["a"][0] != card.dots["a"][1]  # the CFG shows the rewrite
+    # An untouched function is still listed, unchanged, not folded into the module.
+    assert not card.functions["b"].changed
+    assert card.functions["b"].before == card.functions["b"].after
+    # The module row survives as the whole-module overview.
+    assert card.functions["[module]"].changed
+
+
+def _module(a_ret: int, b_ret: int) -> str:
+    """A two-function module body opening on the "; ModuleID" preamble, so the
+    parser marks it module-scope (whole module at every dump)."""
+    return (
+        "; ModuleID = 'm.ll'\n"
+        f"define i32 @a() {{\n  ret i32 {a_ret}\n}}\n"
+        "\n"
+        f"define i32 @b() {{\n  ret i32 {b_ret}\n}}\n"
+    )
+
+
+def test_build_lane_a_module_pass_diffs_against_the_preceding_dump_not_the_seed():
+    # Regression: a module pass's "[module]" row must show only what THAT pass
+    # changed. Under -print-module-scope every dump is a whole module, so when a
+    # function pass rewrites a body and a module pass later rewrites a different
+    # one, the module pass's before-text must be the module as it just stood
+    # (the function pass's whole-module dump) -- not the stale seed, which would
+    # make the module row claim the function pass's rewrite as its own.
+    stderr = (
+        "Running pass: SROAPass on a\n"
+        "*** IR Dump After SROAPass on a ***\n"
+        + _module(1, 2)                                        # a: 0 -> 1
+        + "Running pass: IPSCCPPass on [module]\n"
+        "*** IR Dump After IPSCCPPass on [module] ***\n"
+        + _module(1, 3)                                        # b: 2 -> 3 only
+    )
+    seed = strip_module_noise(_module(0, 2).splitlines())
+    card = next(p for p in build_lane_a(stderr, input_ir=seed)
+                if p.name == "IPSCCPPass")
+    module = card.functions["[module]"]
+    # The module row diffs against SROA's dump -- the module as IPSCCP received
+    # it -- not the seed. a had already been rewritten by SROAPass, so the
+    # module-before carries a at 1 (SROA's dump), never a at 0 (the seed).
+    assert module.before == strip_module_noise(_module(1, 2).splitlines())
+    # Of the module-level diff, a is context (unchanged between the two dumps);
+    # only b changed, so only b's own rewrite shows up on the module row.
+    before_fns = split_module_functions(module.before)
+    after_fns = split_module_functions(module.after)
+    assert before_fns["a"] == after_fns["a"] == "define i32 @a() {\n  ret i32 1\n}"
+    assert before_fns["b"] != after_fns["b"]
+    assert "ret i32 3" in after_fns["b"]
+    # ...and the per-function rows agree: a is not credited with a change it did
+    # not make, while b's rewrite is.
+    assert not card.functions["a"].changed
+    assert card.functions["a"].before == "define i32 @a() {\n  ret i32 1\n}"
+    assert card.functions["b"].changed
+    assert "ret i32 3" in card.functions["b"].after
 
 
 def test_build_lane_a_folds_loop_dumps_into_the_function_they_run_in():

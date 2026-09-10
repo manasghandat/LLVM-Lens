@@ -12,6 +12,11 @@ from typing import Any
 
 from .diff import FnChange
 
+# opt names a whole-module dump "[module]". A module pass is attributed to the
+# functions it rewrote (report.build_lane_a), but the "[module]" pseudo-row is
+# also kept as the whole-module diff.
+MODULE_FN = "[module]"
+
 # Files copied into the report directory (paths relative to frontend/).
 FRONTEND_FILES = (
     "index.html",
@@ -118,6 +123,14 @@ def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
     """Lines added/removed across every function this pass touched."""
     if pass_.is_input:
         return None
+    module_change = pass_.functions.get(MODULE_FN)
+    if module_change is not None:
+        # The "[module]" pseudo-row holds the whole module, so its diff already
+        # covers every function inside it (plus any module-level edit, e.g. a
+        # global initializer). The per-function rows are attributed for the
+        # function views; adding them here as well would double count.
+        added, removed = module_change.line_delta
+        return {"added": added, "removed": removed}
     added = removed = 0
     for change in pass_.functions.values():
         fn_added, fn_removed = change.line_delta

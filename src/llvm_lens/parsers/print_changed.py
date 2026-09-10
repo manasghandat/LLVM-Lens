@@ -28,6 +28,9 @@ class IrSnapshot:
     ir: str  # dump body, module bookkeeping removed
     # Removed bookkeeping, kept for its `!N = !DI...` source-mapping nodes.
     metadata: str = ""
+    # True when the body opened on the "; ModuleID = " preamble, i.e. it carries
+    # the whole module (opt -print-module-scope), not just the named function.
+    module_scope: bool = False
 
     @property
     def text(self) -> str:
@@ -47,7 +50,7 @@ def parse_changed_ir(stderr: str) -> list[IrSnapshot]:
         nonlocal pass_name, function, body, module_scope
         if pass_name is not None:
             code, metadata = split_module_noise(body)
-            snapshots.append(IrSnapshot(pass_name, function, code, metadata))
+            snapshots.append(IrSnapshot(pass_name, function, code, metadata, module_scope))
         pass_name = None
         function = ""
         body = []
