@@ -23,6 +23,12 @@ report/
 # Local configuration
 .env
 .env.local
+.llvm_lens_config
+
+# ask-AI credentials copied into a report directory (-o anywhere, so not just
+# the ignored report/ above). Never commit one.
+**/data/ai-config.json
+**/data/ai-config.js
 
 # Editor / OS
 .idea/

@@ -11,6 +11,7 @@
   <div class="brand"><span class="brand-mark" aria-hidden="true"></span>LLVM-Lens</div>
   <div class="meta" id="meta"></div>
   <button class="chip" id="cmdBtn" title="Show the exact clang/opt/llc commands that built this report" aria-expanded="false">commands</button>
+  <button class="chip" id="aiBtn" title="Ask an AI about the selected pass or function" aria-expanded="false">ask AI</button>
   <!-- The exact argv of every stage, dropped from the topbar. A child of the
        header so it hangs off whatever height the header has; hidden until
        asked for, since it is provenance, not something to read per pass. -->
@@ -81,6 +82,68 @@
       <div class="bpanel-body" id="bottomBody"></div>
     </section>
   </main>
+
+  <!-- ask AI: a third grid column, so the split view keeps its own width and
+       the graphs only need a resize when the drawer opens. Loaded state comes
+       from ai.js; every id here is what it looks up. -->
+  <aside class="aipanel" id="aiPanel" hidden>
+    <div class="ai-head">
+      <span class="ai-title">ask AI</span>
+      <span class="ai-model" id="aiModel"></span>
+      <button class="chip ai-icon" id="aiSettingsBtn" title="provider and API key">⚙</button>
+      <button class="chip ai-icon" id="aiClear" title="clear this conversation">⌫</button>
+      <button class="chip ai-icon" id="aiClose" title="close (esc)">✕</button>
+    </div>
+
+    <form class="ai-settings" id="aiSettings" hidden>
+      <label class="ai-field">
+        <span>provider</span>
+        <select name="provider">
+          <option value="anthropic">Anthropic</option>
+          <option value="openai-compatible">OpenAI-compatible</option>
+        </select>
+      </label>
+      <label class="ai-field">
+        <span>model</span>
+        <input name="model" spellcheck="false" placeholder="claude-opus-5">
+      </label>
+      <label class="ai-field" id="aiBaseUrlRow" hidden>
+        <span>base url</span>
+        <input name="baseUrl" spellcheck="false" placeholder="https://api.openai.com/v1">
+      </label>
+      <label class="ai-field">
+        <span>api key</span>
+        <input name="apiKey" type="password" spellcheck="false" autocomplete="off" placeholder="sk-…">
+      </label>
+      <div class="ai-field-note" id="aiKeyNote"></div>
+      <div class="ai-field-note">
+        A key set here is kept in this browser (localStorage) and is used by
+        every report you open. It never enters the report's HTML or manifest.
+        <code>llvm-lens configure-ai</code> instead stores one for every report
+        you build, and that copy takes precedence over this one.
+      </div>
+      <div class="ai-save-row">
+        <button class="chip ai-save" type="submit">save</button>
+        <button class="chip" id="aiForget" type="button" hidden
+                title="remove the key stored in this browser">forget</button>
+      </div>
+      <div class="ai-field-note" id="aiForgetNote" hidden>
+        A key copied into this report at build time stays until the report is
+        rebuilt with <code>--no-ai</code>, which is also what to do before
+        sharing the directory.
+      </div>
+    </form>
+
+    <div class="ai-messages" id="aiMessages"></div>
+    <div class="ai-foot">
+      <div class="ai-ctx" id="aiCtx"></div>
+      <div class="ai-composer">
+        <textarea id="aiPrompt" rows="2" spellcheck="false"
+                  placeholder="Ask about this pass or function…  (enter to send, shift+enter for a newline)"></textarea>
+        <button class="chip" id="aiSend">send</button>
+      </div>
+    </div>
+  </aside>
 </div>
 
 <!-- CFG graph stack: load order matters (dagre before cytoscape-dagre;
@@ -89,5 +152,6 @@
 <script src="vendor/dagre.min.js"></script>
 <script src="vendor/cytoscape-dagre.js"></script>
 <script src="app.js"></script>
+<script src="ai.js"></script>
 </body>
 </html>

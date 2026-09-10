@@ -21,11 +21,18 @@ MODULE_FN = "[module]"
 FRONTEND_FILES = (
     "index.html",
     "app.js",
+    "ai.js",
     "style.css",
     "vendor/cytoscape.min.js",
     "vendor/dagre.min.js",
     "vendor/cytoscape-dagre.js",
 )
+
+# The ask-AI credentials, written beside the manifest rather than into it: the
+# manifest is the report's data contract, and a secret does not belong in it.
+# Written only when configure-ai has stored a key, and gitignored -- a report
+# directory is meant to be shareable, so `--no-ai` must leave nothing behind.
+AI_CONFIG_ASSIGN = "window.__LLVM_LENS_AI_CONFIG__"
 
 
 # Asset references in index.html that get a cache-busting content-digest stamp.
@@ -178,17 +185,39 @@ def _write_json_plus_script(path: Path, data: dict[str, Any], assign: str) -> No
     path.with_suffix(".js").write_text(f"{assign} = {text};\n")
 
 
+def _ai_config_json(ai_config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The subset of the user config the browser needs, or None to write none."""
+    if not ai_config or not ai_config.get("api_key"):
+        return None
+    return {
+        "provider": ai_config.get("provider", "anthropic"),
+        "api_key": ai_config["api_key"],
+        "model": ai_config.get("model") or "",
+        "base_url": ai_config.get("base_url") or "",
+    }
+
+
 def emit_report(
     report_dir: str | Path,
     *,
     passes: list[ReportPass],
     metadata: dict[str, Any],
     frontend_dir: str | Path,
+    ai_config: dict[str, Any] | None = None,
 ) -> Path:
     """Write the report into *report_dir*; returns the manifest path."""
     report_dir = Path(report_dir)
     data_dir = report_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    ai = _ai_config_json(ai_config)
+    if ai is not None:
+        _write_json_plus_script(data_dir / "ai-config", ai, AI_CONFIG_ASSIGN)
+    else:
+        # A rebuild into an existing directory must not leave a previous run's
+        # credentials behind -- that is exactly the case --no-ai exists for.
+        for stale in (data_dir / "ai-config.json", data_dir / "ai-config.js"):
+            stale.unlink(missing_ok=True)
 
     manifest = _manifest_json(passes, metadata)
     _write_json_plus_script(

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from llvm_lens import config as config_mod
 from llvm_lens.compile import compile_to_ir
 from llvm_lens.toolchain import ToolchainError, discover_toolchain
 
@@ -23,6 +24,18 @@ from llvm_lens.toolchain import ToolchainError, discover_toolchain
 # demo input, which is why it lives under examples/ rather than in fixtures/.
 SAMPLE_C = Path(__file__).resolve().parent.parent / "examples" / "side-channel" / "sample.c"
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def no_real_ai_config(tmp_path, monkeypatch):
+    """Keep every test off the developer's own ~/.llvm_lens_config.
+
+    build_report() reads the stored config to decide whether to write the
+    report's ai-config sidecar, so without this an end-to-end build on a
+    machine that has a key configured would copy that key into a temp
+    directory. Tests that need a config set their own path (see test_config).
+    """
+    monkeypatch.setenv(config_mod.CONFIG_ENV, str(tmp_path / "no-such-config"))
 
 # Common apt.llvm.org locations, newest first, used when PATH discovery fails.
 _BIN_DIR_CANDIDATES = [
