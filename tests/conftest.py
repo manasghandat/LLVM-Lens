@@ -1,14 +1,4 @@
-"""Shared fixtures. Integration tests (real clang/opt/llc runs) skip cleanly
-when no LLVM toolchain is discoverable; on this machine LLVM 22 lives in
-/usr/lib/llvm-22/bin and is picked up by the fallback candidates below.
-
-The parser tests read canned tool output from tests/fixtures/ instead of
-running anything. Those captures are large and are not currently checked in,
-so `capture` skips rather than fails when one is absent: they guard exact
-LLVM output formats, and a missing capture says nothing about the code under
-test. Regenerate one by running the stage that produces it and copying the
-matching raw/*.log out of the report directory.
-"""
+"""Shared fixtures: integration tests skip cleanly without a toolchain."""
 
 from __future__ import annotations
 
@@ -20,21 +10,13 @@ from llvm_lens import config as config_mod
 from llvm_lens.compile import compile_to_ir
 from llvm_lens.toolchain import ToolchainError, discover_toolchain
 
-# The one source the integration tests compile. It doubles as the --custom-pass
-# demo input, which is why it lives under examples/ rather than in fixtures/.
 SAMPLE_C = Path(__file__).resolve().parent.parent / "examples" / "side-channel" / "sample.c"
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
 def no_real_ai_config(tmp_path, monkeypatch):
-    """Keep every test off the developer's own ~/.llvm_lens_config.
-
-    build_report() reads the stored config to decide whether to write the
-    report's ai-config sidecar, so without this an end-to-end build on a
-    machine that has a key configured would copy that key into a temp
-    directory. Tests that need a config set their own path (see test_config).
-    """
+    """Keep every test off the developer's own ~/.llvm_lens_config."""
     monkeypatch.setenv(config_mod.CONFIG_ENV, str(tmp_path / "no-such-config"))
 
 # Common apt.llvm.org locations, newest first, used when PATH discovery fails.

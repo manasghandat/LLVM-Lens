@@ -18,8 +18,6 @@ def test_compile_c_to_ir(toolchain, tmp_path):
                            extra_args=("-DNDEBUG",))
     assert result.kind == "clang"
     assert result.ir_path == tmp_path / "sample.ll"
-    # The recorded argv is what the report's command sheet shows and what a
-    # reader is invited to paste, so it is asserted exactly.
     assert list(result.cmd) == [
         str(toolchain.clang.path), "-S", "-emit-llvm", "-O0",
         "-Xclang", "-disable-O0-optnone",

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 HEADER_RE = re.compile(r"^\*\*\* IR Dump After (.+?) on (.+) \*\*\*$")
 # -debug-pass-manager log lines interleave with the dumps; never IR.
 NOISE_RE = re.compile(r"^(?:Running (?:pass|analysis)|Invalidating analysis):")
-# Module preamble + metadata block; dropped so every consumer sees the same stripped text.
+# Module preamble + metadata block; dropped so every consumer sees the same text.
 MODULE_NOISE_RE = re.compile(
     r"^(?:; ModuleID = |source_filename = |target (?:datalayout|triple) = |!)"
 )
@@ -28,8 +28,6 @@ class IrSnapshot:
     ir: str  # dump body, module bookkeeping removed
     # Removed bookkeeping, kept for its `!N = !DI...` source-mapping nodes.
     metadata: str = ""
-    # True when the body opened on the "; ModuleID = " preamble, i.e. it carries
-    # the whole module (opt -print-module-scope), not just the named function.
     module_scope: bool = False
 
     @property

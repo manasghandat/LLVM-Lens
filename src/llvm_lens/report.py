@@ -37,12 +37,8 @@ MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After ")
 
 DEFAULT_PASSES = "default<O2>"
 
-# MODULE_FN ("[module]") lives in emit.py, which serializes it into the report;
-# report.py imports (and so re-exports) it. The synthetic card names below mark
-# cards holding the IR each lane was handed; neither is a pass.
 INPUT_PASS_NAME = "Input IR"
 BACKEND_INPUT_PASS_NAME = "Optimized IR"
-# A single-function SCC "(main)" and a loop fold into their function; "(a, b)" stays its own entity.
 SCC_FN_RE = re.compile(r"^\(([^(),]+)\)$")
 LOOP_FN_RE = re.compile(r"^loop .* in function (.+)$")
 
@@ -197,25 +193,12 @@ def build_lane_a(
         if table:
             snap_src[key] = map_lines(snap[key], table)
 
-    # Under -print-module-scope every dump carries the whole module, so the dump
-    # stream is also a record of module state: a pass that changes IR emits one
-    # dump, and nothing else moves the module. A module pass's "[module]" row
-    # must therefore diff against the body of the dump immediately before its
-    # own -- the module as that pass actually received it. It must not diff
-    # against an aggregate advanced only by earlier *[module]-named* dumps:
-    # that aggregate goes stale across a stretch of function passes, since each
-    # whole-module function dump rewrites functions without a [module] row to
-    # carry them forward, and the module pass would then appear to "change"
-    # everything those function passes had already done.
     module_before: dict[str, str] = {}
     last_module = input_ir
     for dump in dumps:
         if _canonical_fn(dump.function) == MODULE_FN and last_module is not None:
             # First whole-module body seen up to (but not including) this dump.
             module_before.setdefault(dump.pass_name, last_module)
-        # A [module]-named dump is whole-module even when synthetic fixtures
-        # omit the "; ModuleID" preamble; a function dump is whole-module only
-        # under -print-module-scope (module_scope=True).
         if dump.function == MODULE_FN or dump.module_scope:
             last_module = dump.ir
 
@@ -238,9 +221,6 @@ def build_lane_a(
     known_fns: list[str] = []
     if input_ir is not None:
         prev_text[MODULE_FN] = input_ir
-        # A whole module has no single CFG, so the "[module]" pseudo-row never
-        # gets a dot -- the input card sets dots={} for the same reason. Only
-        # real functions have CFGs.
         for fn, text in split_module_functions(input_ir).items():
             prev_text[fn] = text
             prev_dots[fn] = ir_cfg_dot(text, fn)
@@ -253,21 +233,11 @@ def build_lane_a(
             after = snap.get((name, fn))
             if after is None:
                 continue
-            # A "[module]" row diffs against the module as this pass received it
-            # (see module_before above); every other row diffs against its own
-            # pre-pass text, which function dumps have been keeping fresh.
             before = module_before.get(name, prev_text.get(fn, "")) if fn == MODULE_FN else prev_text.get(fn, "")
             fn_changes[fn] = FnChange(fn, before, after)
             after_src = snap_src.get((name, fn))
             if after_src is not None:
                 src_maps[fn] = after_src
-        # A whole-module dump (e.g. IPSCCPPass) carries the new state of every
-        # function it holds, but the header only names "[module]". Credit each
-        # function against its own pre-pass text here -- prev_text has not been
-        # advanced yet -- so a module pass that rewrites a body is attributed to
-        # that function, with a diff and CFG to prove it, instead of surfacing
-        # only as a module-level change. (Multi-function SCC "(...)" dumps stay
-        # their own entity by design.)
         for entity, change in list(fn_changes.items()):
             if entity != MODULE_FN:
                 continue
@@ -630,11 +600,7 @@ def build_report(
     source_map: bool = True,
     ai_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the full pipeline and emit the report. Returns a summary dict.
-
-    *ai_config* is the stored provider/key for the report's ask-AI panel.
-    None (the default) reads ~/.llvm_lens_config; pass {} to embed nothing.
-    """
+    """Run the full pipeline and emit the report. Returns a summary dict."""
     out = Path(output)
     out.mkdir(parents=True, exist_ok=True)
     raw = out / "raw"

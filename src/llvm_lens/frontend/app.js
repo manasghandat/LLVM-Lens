@@ -1,13 +1,4 @@
-/* LLVM-Lens report viewer. Single-screen console, file://-safe.
- * Left rail: pipeline (churn spine + pass list, lane tabs IR / machine) over
- * the function list, both collapsible. Right: the main view -- CFG (cytoscape
- * graphs), Diff (unified/git-style), IR (before/after snapshots), Source, ISel,
- * Graphs, Structure -- over a detail drawer (Log / Analyses / RegMap / Spills /
- * Asm) and a status strip that reports what the drawer holds when it is shut.
- *
- * Data: fetch('data/manifest.json') first; browsers block fetch() on
- * file:// URLs, so we fall back to the sibling .js wrappers emitted by
- * emit.py. */
+/* LLVM-Lens report viewer: rail, views, CFG, drawer. */
 
 "use strict";
 
@@ -50,10 +41,6 @@ async function loadPass(id) {
 
 /* --- diff helpers -------------------------------------------------------- */
 
-// Unified, git-style diffs: an op stream (context / removed / added lines
-// with their before/after line numbers), collapsed into hunks with a few
-// lines of context around each change. Rendering lives in unifiedDiffHtml.
-
 const DIFF_CONTEXT = 3;   // unchanged lines kept around a change (git default)
 
 function splitLines(text) {
@@ -61,8 +48,6 @@ function splitLines(text) {
   return String(text).replace(/\n$/, "").split("\n");
 }
 
-// Git prints every removal of a change block before that block's additions;
-// the LCS walk below can interleave them, so regroup each run of changes.
 function groupChanges(ops) {
   const out = [];
   let run = [];
@@ -79,14 +64,9 @@ function groupChanges(ops) {
   return out;
 }
 
-// Line diff -> [{ op: " " | "-" | "+", text, a, b }], where a/b are 1-based
-// line numbers in the before/after text (null on the side lacking the line).
 function diffOps(beforeText, afterText) {
   const A = splitLines(beforeText), B = splitLines(afterText);
 
-  // Trim the common head and tail before the O(n*m) table below: a pass
-  // usually rewrites a few lines in the middle of an otherwise equal
-  // function, so this keeps the table small on real IR.
   let head = 0;
   while (head < A.length && head < B.length && A[head] === B[head]) head++;
   let tail = 0;
@@ -140,9 +120,6 @@ function diffStat(beforeText, afterText) {
   };
 }
 
-// Collapse unchanged stretches into hunks keeping `context` lines around each
-// change. Infinite context yields a single hunk covering the whole function.
-// Each hunk carries its @@ header plus how many lines were hidden before it.
 function diffHunks(ops, context = DIFF_CONTEXT) {
   const keep = new Array(ops.length).fill(false);
   let changes = 0;
@@ -175,8 +152,6 @@ function diffHunks(ops, context = DIFF_CONTEXT) {
   return hunks;
 }
 
-// One unified diff: per hunk an @@ header row, then rows of
-// [old line no.][new line no.][+/-/space marker][tokenized line].
 function unifiedDiffHtml(hunks) {
   return hunks.map(hunk => {
     const hidden = hunk.hidden
@@ -184,8 +159,6 @@ function unifiedDiffHtml(hunks) {
         + `line${hunk.hidden === 1 ? "" : "s"} hidden</span>`
       : "";
     const rows = hunk.rows.map(row => {
-      // Namespaced classes: a bare "ctx" would collide with the view's own
-      // .ctx rule, whose overflow:hidden would break the sticky gutter.
       const cls = row.op === "+" ? "add" : row.op === "-" ? "del" : "uctx";
       const body = highlightIR(row.text);
       return `<div class="urow ${cls}">`
@@ -201,11 +174,6 @@ function unifiedDiffHtml(hunks) {
   }).join("");
 }
 
-// One side of the IR view: every line of that snapshot, numbered on its own
-// side, with the lines this pass touched tinted. `mark` picks the side --
-// "-" keeps context plus removals (the before text), "+" context plus
-// additions. Nothing is collapsed: this view is for reading the whole
-// function, not just the change.
 function irSideHtml(ops, mark) {
   return ops.filter(o => o.op === " " || o.op === mark).map(o => {
     const cls = o.op === " " ? "uctx" : (mark === "+" ? "add" : "del");
@@ -218,11 +186,6 @@ function irSideHtml(ops, mark) {
 
 /* --- llvm ir highlighting -------------------------------------------------- */
 
-// Token vocabulary modeled on the llvm-syntax-highlighting TextMate grammar
-// (keywords / types / literals / block labels / strings / numbers / comments
-// / decorators / function headers), plus MIR additions (line-leading
-// opcodes, $registers). Line-based scanner: first match at a position wins;
-// everything else passes through escaped.
 const IR_TOKEN_DEFS = [
   { cls: "tok-com", re: /;[^\n]*/ },
   { cls: "tok-str", re: /c?"(?:\\.|[^"\\])*"/ },
@@ -239,18 +202,6 @@ const IR_TOKEN_DEFS = [
 const IR_TOKEN_RES = IR_TOKEN_DEFS.map(d =>
   ({ cls: d.cls, re: new RegExp(d.re.source, "g") }));
 
-// MIR annotation noise that is not the instruction itself, stripped before
-// highlighting. The byte offset llc prints before each post-RA instruction
-// ("80B"), the resolved source-location comment LLVM appends to
-// debug-location metadata, and the predecessors comment (redundant with the
-// CFG's successors) all belong in neither a diff nor a source view. Returns
-// null for a line that should be blanked entirely -- the caller keeps the row
-// (and its line index) so the source map, keyed on the unmodified text, stays
-// aligned.
-// MIR debug/unwind pseudo-instructions and predecessor comments are not real
-// machine instructions -- the renderers drop these lines entirely (rather than
-// rendering them as blank rows) so the view stays compact. Centralized here so
-// the renderers and tests agree on what counts as display noise.
 function isMirDebugLine(line) {
   return /^\s*(DBG_(VALUE(_LIST)?|INSTR_REF|PHI)|(frame-(setup|destroy)\s+)?CFI_INSTRUCTION|; predecessors:)/.test(line);
 }
@@ -258,11 +209,7 @@ function isMirDebugLine(line) {
 function cleanMirLine(line) {
   // Instruction byte-offset prefix: "80B      CLFLUSH" -> "  CLFLUSH".
   line = line.replace(/^(\d+B)\s+/, "  ");
-  // "debug-location !N; <file>:<line>:<col>" -- the source-map pane already
-  // shows that mapping, so drop the metadata ref and its resolved comment.
   line = line.replace(/,?\s*debug-location\s+!\d+(\s*;[^;]*)?$/, "");
-  // "debug-instr-number N" is debug-only metadata that precedes debug-location;
-  // once that's gone it dangles at the end of the line -- drop it too.
   line = line.replace(/,?\s*debug-instr-number\s+\d+/, "");
   return line;
 }
@@ -296,9 +243,6 @@ function highlightIR(text) {
 
 /* --- c source highlighting ------------------------------------------------ */
 
-// Deliberately shallow: enough structure to read a C file next to the IR,
-// reusing the same .tok-* palette. Comments and strings win over keywords,
-// so a keyword inside a string stays plain.
 const C_TOKEN_RES = [
   { cls: "tok-com", re: /\/\/[^\n]*|\/\*[\s\S]*?\*\// },
   { cls: "tok-md", re: /^[ \t]*#\s*\w+/ },                       // preprocessor
@@ -333,8 +277,6 @@ function highlightC(line) {
 
 /* --- views ---------------------------------------------------------------- */
 
-// Workspace state. One screen, no routes: lane tabs and the function list
-// drive which pass/function the split view and bottom panel show.
 let STATE = {
   lane: "ir",                // "ir" | "mir" — active lane tab
   passId: null,              // selected pass id (manifest)
@@ -360,26 +302,14 @@ function passSummaries() { return (CURRENT_MANIFEST || { passes: [] }).passes; }
 function currentPassSummary() { return passSummaries().find(p => p.id === STATE.passId); }
 
 // --- input cards (report.build_input_pass) ---
-// Each lane opens on the LLVM IR module it was handed: clang's output for the
-// IR lane, the post-opt module llc reads for the machine lane. Nothing in the
-// lane precedes them, so there is nothing to diff against, and their one
-// "function" is a whole module, so a CFG of it is meaningless. Only IR and
-// Source are offered there.
 const INPUT_MODES = ["ir", "src"];
-// Views that are always available regardless of the selected pass — the structure view
-// overview is meaningful even on the input cards, so it is never hidden.
 const GLOBAL_MODES = ["structure", "analyses"];
 
-// True on either lane's input card (lane A's "Input IR", lane B's "Optimized
-// IR"): both hold a whole LLVM IR module handed to that lane, not a pass.
 function isInputCard() {
   const summary = currentPassSummary();
   return !!(summary && summary.isInput);
 }
 
-// The ISel view exists on one card in the report -- instruction selection --
-// and only for a function it left a correlation for. The manifest says which,
-// so the chip is right before the card's payload has loaded.
 function hasIselMap() {
   const summary = currentPassSummary();
   return !!(summary && summary.iselFns && STATE.fn && summary.iselFns.includes(STATE.fn));
@@ -391,9 +321,6 @@ function modeAvailable(mode) {
   return !isInputCard() || INPUT_MODES.includes(mode);
 }
 
-// STATE.mode is what the user asked for and is left alone; this is what the
-// current pass can actually show. Stepping onto the input card falls back to
-// IR, and stepping off it restores the mode they had chosen.
 function effectiveMode() {
   return modeAvailable(STATE.mode) ? STATE.mode : "ir";
 }
@@ -417,12 +344,6 @@ function renderLaneTabs() {
 }
 
 // --- "only changed" (both lanes) ---
-// "changed" means the same thing in either lane -- this pass's snapshot of some
-// function differs from the previous snapshot of that function (diff.py
-// FnChange.changed) -- so the filter applies to machine passes exactly as it
-// does to IR passes. Two things survive it: a custom pass, because the point of
-// badging one is to be able to find it and an analysis-only plugin never
-// changes IR, and each lane's input card, which carries changed=true.
 function passVisible(p, onlyChanged) {
   return !onlyChanged || p.changed || p.isCustom;
 }
@@ -431,8 +352,6 @@ function lanePasses() {
   return passSummaries().filter(p => p.lane === STATE.lane);
 }
 
-// What the list currently shows: the lane, minus the "changed" filter and the
-// name filter. The spine ignores both -- it is a map of the whole lane.
 function listedPasses() {
   const q = (document.getElementById("passFilter").value || "").trim().toLowerCase();
   const onlyChanged = document.getElementById("changedOnly").checked;
@@ -440,16 +359,12 @@ function listedPasses() {
     passVisible(p, onlyChanged) && (!q || p.name.toLowerCase().includes(q)));
 }
 
-// Lines added + removed (emit.py _line_delta), the one per-pass number both
-// lanes measure the same way. Input cards carry no delta -- nothing precedes them.
 function churn(p) {
   return p.lineDelta ? p.lineDelta.added + p.lineDelta.removed : 0;
 }
 
 const BAR_W = 46;   // must match .bar in style.css
 
-// A bar sized to the churn, split into removed and added: 167 rows of
-// "+465 −238" do not scan, a bar does.
 function churnBarHtml(p, max) {
   const d = p.lineDelta;
   if (!d || !churn(p)) return '<span class="bar none"></span>';
@@ -480,8 +395,6 @@ function renderPassList() {
   renderSpine(max);
 }
 
-// The lane as one column of ticks: length is churn, amber where the pass
-// carries spills, azure on the selected pass.
 function renderSpine(max) {
   document.getElementById("spine").innerHTML = lanePasses().map(p => {
     const c = churn(p);
@@ -507,12 +420,6 @@ async function selectPass(id) {
   const data = await loadPass(id);
   if (STATE.passId !== id) return;  // user switched passes while loading
   CURRENT_PASS = data;
-  // Default to the first changed function, else the first function. Prefer a
-  // real function over the "[module]" pseudo-row: a module pass (IPSCCP,
-  // GlobalOpt, ...) marks "[module]" changed when it rewrites a body, but that
-  // row is a whole-module diff with no CFG, so land on the function whose
-  // before/after and CFG actually show the rewrite. "[module]" stays the
-  // default when only it changed (a module-level edit, e.g. a global).
   const names = fnNames();
   const changed = (f) => fnChange(f) && fnChange(f).changed;
   STATE.fn = names.find(f => f !== "[module]" && changed(f))
@@ -548,8 +455,6 @@ function renderFnList() {
   const all = fnNames();
   const names = all.filter(n => !q || n.toLowerCase().includes(q));
   let rows;
-  // A long module splits: what this pass changed, then the rest -- dimmed but
-  // still listed, because "this pass did nothing here" is also an answer.
   if (all.length >= FN_GROUP_AT && CURRENT_PASS) {
     const group = (label, list) => list.length
       ? `<div class="fngroup">${label}<span class="count">${list.length}</span></div>`
@@ -598,17 +503,11 @@ function renderCtx() {
 function updateViewHead() {
   const set = (el, on) => { el.classList.toggle("on", on); el.classList.toggle("off", !on); };
   const mode = effectiveMode();
-  // A view this pass cannot show is removed from the row, not dimmed: there
-  // is nothing there to reason about.
   document.querySelectorAll("#modeCtl .chip").forEach(b => {
     const ok = modeAvailable(b.dataset.mode);
     set(b, ok && b.dataset.mode === mode);
     b.hidden = !ok;
   });
-  // Orientation only applies where the view actually rendered a pair (the IR
-  // and Source views, and CFG showing both graphs) -- ask the DOM rather than
-  // re-deriving it per mode, which also covers panes that fell back to an
-  // empty state.
   const paired = !!document.querySelector("#split .irpair, #split .cfg-pair");
   document.getElementById("splitCtl").classList.toggle("inactive", !paired);
   set(document.getElementById("splitSide"), STATE.orientation === "side");
@@ -650,10 +549,6 @@ function cfgPaneHtml() {
 }
 
 const ANALYSIS_TYPES = ["pdt", "cdg", "ddg", "pdg", "mdg", "lnt", "cg"];
-// Bottom-panel Analyses buckets, in display order. The manifest also carries
-// lane A's "cached" list -- an analysis the pass asked for and got for free --
-// which is bookkeeping about the pass manager rather than about the pass, and
-// is not shown.
 const ANALYSIS_BUCKETS = ["run", "invalidated"];
 const ANALYSIS_LABELS = {
   pdt: "PDT", cdg: "CDG", ddg: "DDG", pdg: "PDG", mdg: "MDG", lnt: "LNT", cg: "Call graph",
@@ -693,8 +588,6 @@ function diffPaneHtml() {
       `<div class="cfg-empty">(${escapeHtml(STATE.fn)} unchanged — nothing to diff)</div>`);
   }
   const { ops, del, add } = diffStat(ch.before, ch.after);
-  // Debug/unwind pseudo-instructions and predecessor comments are not real
-  // machine instructions -- drop them so they don't render as blank rows.
   const realOps = ops.filter(o => !isMirDebugLine(o.text));
   const full = STATE.diffContext === "full";
   const hunks = diffHunks(realOps, full ? Infinity : DIFF_CONTEXT);
@@ -703,8 +596,6 @@ function diffPaneHtml() {
   ).join("");
   const stat = `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`;
   const fn = escapeHtml(STATE.fn);
-  // .ubody spans the widest row, so every bar and row tint reaches the full
-  // scroll width; the sticky bits inside slide against it.
   const body = `
     <div class="udiff-wrap">
       <div class="udiff">
@@ -720,15 +611,10 @@ function diffPaneHtml() {
   return pane("DIFF", chips, stat, body);
 }
 
-// The whole IR, both sides, nothing collapsed -- the Diff view answers "what
-// did this pass touch", this one answers "what does the function look like".
-// An unchanged function still renders: both sides, no tint.
 function irPaneHtml() {
   const ch = fnChange(STATE.fn);
   if (!ch) return pane("IR", "", "", '<div class="cfg-empty">(select a function)</div>');
   const { ops, del, add } = diffStat(ch.before, ch.after);
-  // Debug/unwind pseudo-instructions and predecessor comments are not real
-  // machine instructions -- drop them so they don't render as blank rows.
   const realOps = ops.filter(o => !isMirDebugLine(o.text));
   const side = (label, mark, count, empty) => `
     <div class="irside">
@@ -754,10 +640,6 @@ function irPaneHtml() {
 
 // --- Source view: this stage's IR beside the C it came from -----------------
 
-// Debug info maps each IR/MIR line to one source line (sourcemap.py
-// resolves the !dbg metadata at build time). The two panes are keyed on that
-// line number: clicking either side highlights every counterpart of it.
-
 // Which file this snapshot mostly came from — inlining can pull in several.
 function srcFileTally(map) {
   const tally = new Map();
@@ -778,9 +660,6 @@ function srcPaneHtml() {
   if (!ch) return empty("(select a function)");
   const srcMap = ch.srcAfter || [];
   const allLines = splitLines(ch.after);
-  // Debug/unwind pseudo-instructions and predecessor comments are not real
-  // machine instructions -- drop them from both the displayed lines and the
-  // source map, keeping the two arrays index-aligned so the line mapping holds.
   const keep = allLines.map((t, i) => !isMirDebugLine(t) && i < srcMap.length);
   const lines = allLines.filter((t, i) => keep[i]);
   const map = srcMap.filter((r, i) => keep[i]);
@@ -834,9 +713,6 @@ function srcPaneHtml() {
 
 // --- Structure tree: the pass-manager hierarchy at a glance ---------------------
 
-// A leaf row for a machine/ir pass, reusing the pass list's signal language.
-// Looks the pass's summary up by id so it can show timing, badges and the
-// analysis count without duplicating that data in the tree.
 function pipelineLeafHtml(summary) {
   if (!summary) return "";
   const a = summary.analysisCounts || {};
@@ -859,9 +735,6 @@ function pipelineLeafHtml(summary) {
     </div>`;
 }
 
-// Recursively render a tree node. Manager/group nodes are collapsible headers;
-// pass leaves render as selectable rows. Returns { html, leafCount } so a group
-// can show how many real passes it contains.
 function pipelineNodeHtml(node, summariesById, onlyChanged, depth) {
   const children = node.children || [];
   if (!children.length) {
@@ -876,8 +749,6 @@ function pipelineNodeHtml(node, summariesById, onlyChanged, depth) {
     return { html: pipelineLeafHtml(summary), leaves: 1 };
   }
 
-  // Container: recurse into children first so we know the leaf count, then
-  // decide whether the whole group is filtered out.
   const parts = [];
   let leaves = 0;
   for (const child of children) {
@@ -939,8 +810,6 @@ function pipelineTreeHtml() {
   return pane("STRUCTURE", "", stat, `<div class="ptree-wrap">${body}</div>`);
 }
 
-// Drill from a tree leaf into its pass: switch to the pass's lane, restore the
-// last detail view, and select it (loads the chunk and renders the detail pane).
 function selectPassFromOverview(id) {
   const p = passSummaries().find(x => x.id === id);
   if (!p) return;
@@ -950,8 +819,6 @@ function selectPassFromOverview(id) {
   selectPass(id);
 }
 
-// Highlight one source line on both sides at once. Done by class toggle rather
-// than a re-render so neither pane loses its scroll position.
 function applySrcHighlight(scrollTo) {
   const line = STATE.srcLine == null ? null : String(STATE.srcLine);
   document.querySelectorAll("#split .urow[data-ln]").forEach(row =>
@@ -991,11 +858,6 @@ function renderMain() {
 
 /* --- ISel view: LLVM IR <-> machine IR ------------------------------------- */
 
-// Instruction selection is the one pass with a foot in both representations,
-// and LLVM labels its own work: a machine block carries the name of the IR
-// block it was selected from, and a machine memory operand names the IR value
-// it addresses. report._attach_isel ships those pairings against the IR llc
-// actually fed to ISel (its own IR passes have run by then); this draws them.
 function iselPaneHtml() {
   const empty = (note) => pane("ISEL", "", "", `<div class="cfg-empty">${note}</div>`);
   const corr = ((CURRENT_PASS || {}).iselMap || {})[STATE.fn];
@@ -1011,8 +873,6 @@ function iselPaneHtml() {
 
   const irLines = splitLines(corr.ir);
   const mirLines = splitLines(change.after);
-  // Line -> the IR block it belongs to; that index is the pair id both sides
-  // are keyed by, so a click on either side can find its counterpart.
   const irBlockOf = new Array(irLines.length).fill(-1);
   corr.irBlocks.forEach((b, i) => {
     for (let line = b.start; line <= b.end && line < irLines.length; line++) irBlockOf[line] = i;
@@ -1066,9 +926,6 @@ function iselPaneHtml() {
   return pane("ISEL", "", stat, body);
 }
 
-// Highlight one block pair (and, from a machine row, the IR lines it names) on
-// both sides at once. Class toggling, not a re-render, so neither pane loses
-// its scroll position -- same bargain as applySrcHighlight.
 function applyIselHighlight(scrollTo) {
   const pair = STATE.iselBlock == null ? null : String(STATE.iselBlock);
   document.querySelectorAll("#split .urow[data-blk]").forEach(r =>
@@ -1086,18 +943,11 @@ function applyIselHighlight(scrollTo) {
 
 // [{ tab, count }] -- the count is what the tab holds, shown before you open it.
 function bottomTabs() {
-  // An input card ran no analyses and allocated no registers; only its Log,
-  // which says where the module came from, has anything to show.
   if (isInputCard()) return [{ tab: "Log" }];
   const runs = ((currentPassSummary() || {}).analysisCounts || {}).run;
   const tabs = [{ tab: "Log" }, { tab: "Analyses", count: runs || 0 }];
-  // Only the register allocator's card carries assignments, and only for the
-  // functions it assigned: offering the tab anywhere else promises a table that
-  // is not there.
   const regMap = CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn];
   if (regMap) tabs.push({ tab: "RegMap", count: Object.keys(regMap).length });
-  // Same rule for spills: a function the allocator kept in registers has no
-  // sites to list, and every pass before the allocator has none at all.
   const sites = CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []);
   if (sites && sites.length) tabs.push({ tab: "Spills", count: sites.length });
   if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push({ tab: "Asm" });
@@ -1117,8 +967,6 @@ function renderBottom() {
     b.addEventListener("click", () => { STATE.bottomTab = b.dataset.tab; renderBottom(); }));
 }
 
-// The strip is the drawer's head moved below it: which pass, how long it took,
-// and a badge per tab. Shut, it is the only thing left of the drawer.
 function renderStrip(tabs) {
   const s = currentPassSummary();
   const muted = text => `<span class="muted">${text}</span>`;
@@ -1140,15 +988,11 @@ function renderStrip(tabs) {
 function bottomBodyHtml() {
   const d = CURRENT_PASS;
   if (!d) return '<p class="cfg-empty">(select a pass)</p>';
-  // Log and Analyses both go empty for plenty of passes: an empty panel reads
-  // as "nothing here", where a placeholder line reads as content.
   if (STATE.bottomTab === "Log") {
     return d.log ? `<pre class="raw">${escapeHtml(d.log)}</pre>` : "";
   }
   if (STATE.bottomTab === "Analyses") {
     const a = d.analyses || {};
-    // Lane A's new PM reports both buckets; lane B's legacy PM only ever shows
-    // an analysis it had to compute, so a machine card carries "run" alone.
     return ANALYSIS_BUCKETS
       .filter(bucket => (a[bucket] || []).length)
       .map(bucket => `
@@ -1157,9 +1001,6 @@ function bottomBodyHtml() {
       .join("");
   }
   if (STATE.bottomTab === "RegMap") {
-    // The table is whichever function the functions panel is on: picking a
-    // function re-renders this panel (renderFnList's click handler), so the
-    // allocator's other functions are one click away rather than absent.
     const map = (d.regMap || {})[STATE.fn];
     if (!map) return "";
     return `<h3>${escapeHtml(STATE.fn)} (${Object.keys(map).length})</h3>
@@ -1169,9 +1010,6 @@ function bottomBodyHtml() {
         .join("") + `</table>`;
   }
   if (STATE.bottomTab === "Spills") {
-    // The selected function's stack traffic as it stands after this pass: the
-    // row badge counts these, this is what it counted. Every site keeps its
-    // block and its instruction, so a spill can be found in the MIR pane.
     const sites = (d.spillSites || {})[STATE.fn] || [];
     if (!sites.length) return "";
     const stores = sites.filter(s => s.kind === "spill").length;
@@ -1189,28 +1027,18 @@ function bottomBodyHtml() {
 
 /* --- CFG graph rendering (cytoscape + dagre, vendored in vendor/) --------- */
 
-// Per-render state: DOT payloads indexed as cfgBodyHtml builds the HTML, and
-// live cytoscape instances that get destroyed on re-render.
 let CFG_PENDING = [];
 const CFG_INSTANCES = new Set();
 
-// Mirrors the style.css token system: --panel2 nodes, --line-strong borders,
-// --ink labels, --entry entry block, --del back edges, --trace selection.
 const CFG_COLORS = {
   node: "#1b1f24", border: "#333a43", entry: "#74c48a",
   text: "#dfe4ea", edge: "#4a535f", back: "#e3767f", accent: "#7aa2f7",
 };
 
-// Label metrics. The node font is monospace, so character width is uniform
-// and we can size each node's box to its label exactly: lines wrap at
-// CFG_FONT.maxW (emulating the old renderer's wrap) and the box grows with
-// the number of visual lines.
 const CFG_FONT = { size: 10, charW: 6.0, lineH: 14, padX: 10, padY: 8, maxW: 300 };
 
 function labelBox(label, charW = CFG_FONT.charW) {
   const { lineH, padX, padY, maxW } = CFG_FONT;
-  // Safety margin: cytoscape word-wraps (text-wrap: wrap) at maxW, so our
-  // hard-wrapped lines must stay measurably narrower than that.
   const maxChars = Math.max(1, Math.floor((maxW - 4) / charW));
   const lines = String(label).split("\n");
   // Hard-wrap long lines so the rendered label matches the computed box.
@@ -1225,9 +1053,6 @@ function labelBox(label, charW = CFG_FONT.charW) {
   return { w: contentW + 2 * padX, h: visual * lineH + 2 * padY, wrapped: wrapped.join("\n") };
 }
 
-// cfg.py emits each node as: n0 [name="bb.0", label="…", code="…"], with
-// label and code absent on a block with no instructions. Attributes are read
-// by name rather than by position, so their order stays cfg.py's business.
 const DOT_ATTR_RE = /(\w+)="((?:[^"\\]|\\.)*)"/g;
 
 function parseDot(dot) {
@@ -1239,10 +1064,6 @@ function parseDot(dot) {
       const attrs = {};
       for (const a of m[2].matchAll(DOT_ATTR_RE)) attrs[a[1]] = un(a[2]);
       const label = attrs.label || "";
-      // The block name is not drawn in the graph -- a bare "6" or "bb.1" among
-      // the instructions reads as one of them -- only in the block detail. A
-      // report written before the name attribute existed carries it as the
-      // label's first line; drop that line so those graphs render the same.
       nodes.push(attrs.name !== undefined
         ? { id: +m[1], name: attrs.name, label, code: attrs.code || "" }
         : {
@@ -1297,9 +1118,6 @@ function mountCfg(el, dot) {
     el.innerHTML = '<p class="cfg-empty">(graph library failed to load)</p>';
     return;
   }
-  // Measure the real monospace advance width (the label font is monospace,
-  // so one measurement covers every character) so box sizing matches the
-  // actual renderer.
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = `${CFG_FONT.size}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
   const charW = Math.max(meas.measureText("M").width, 1);
@@ -1341,9 +1159,6 @@ function mountCfg(el, dot) {
         "color": CFG_COLORS.text,
         "font-family": "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
         "font-size": CFG_FONT.size,
-        // "wrap" is required: with "none" cytoscape collapses "\n" label
-        // lines onto a single row. Our lines are pre-wrapped to fit, so no
-        // extra word wraps occur.
         "text-wrap": "wrap",
         "text-max-width": `${CFG_FONT.maxW}px`,
         "text-valign": "center",
@@ -1368,8 +1183,6 @@ function mountCfg(el, dot) {
         "line-color": CFG_COLORS.back,
         "target-arrow-color": CFG_COLORS.back,
       }},
-      // Self-loop edges need explicit loop geometry or cytoscape refuses to
-      // draw them ("invalid endpoints").
       { selector: "edge.loop", style: {
         "loop-direction": "-45deg",
         "loop-sweep": "-90deg",
@@ -1377,9 +1190,6 @@ function mountCfg(el, dot) {
       }},
     ],
   });
-  // Lay out without the self-loop edges: dagre stamps them with unusable
-  // control points ("invalid endpoints" warnings), and they add nothing to
-  // the ranking. Loops render from their own style instead.
   cy.layout({
     name: "dagre", rankDir: "TB", nodeSep: 24, rankSep: 40, edgeSep: 12,
     eles: cy.elements().not(".loop"),
@@ -1414,10 +1224,6 @@ function mountCfg(el, dot) {
 /* --- boot ---------------------------------------------------------------- */
 
 /* --- command sheet --------------------------------------------------------- */
-// metadata.commands is the argv of every stage that actually ran (report.py
-// build_commands), instrumentation flags and all. It answers "what exactly
-// produced this report" -- which clang, which pipeline string, which triple,
-// which plugin .so -- for someone reading the report on another machine.
 
 function renderCommands(manifest) {
   const commands = (manifest.metadata || {}).commands || [];
@@ -1436,8 +1242,6 @@ function renderCommands(manifest) {
     </div>`).join("");
 }
 
-// Reports open from file://, where navigator.clipboard is unavailable in some
-// browsers; fall back to the selection-based copy, which works everywhere.
 function copyText(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     return navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
@@ -1467,8 +1271,6 @@ function toggleCommands(open) {
 
 function renderMeta(manifest) {
   const m = manifest.metadata;
-  // opt, llc and llvm-dis all report the same "LLVM version X" string, so
-  // list each distinct version once instead of repeating it per tool.
   const tools = [...new Set(Object.values(m.toolVersions || {}).map(v =>
     v.replace(/\s*\(.*\)$/, "")))].join(" · ");
   const errors = [];
@@ -1534,8 +1336,6 @@ document.addEventListener("keydown", evt => {
 document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");
   if (!b || !modeAvailable(b.dataset.mode)) return;
-  // Remember the last detail-oriented mode so clicking a structure leaf can
-  // restore it; the overview itself is not a "last mode" we would restore.
   if (b.dataset.mode !== "structure") STATE.lastMode = b.dataset.mode;
   STATE.mode = b.dataset.mode;
   renderMain();
@@ -1549,8 +1349,6 @@ document.getElementById("splitStack").addEventListener("click", () => {
   renderMain();
 });
 
-// Pane chips live inside the rebuilt panes: CFG source (before / after /
-// both), diff context (hunks / full) and the Source view's file switcher.
 document.getElementById("split").addEventListener("click", evt => {
   const src = evt.target.closest(".ptab[data-src]");
   if (src) { STATE.cfgSource = src.dataset.src; renderMain(); return; }
@@ -1574,9 +1372,6 @@ document.getElementById("split").addEventListener("click", evt => {
     return;
   }
 
-  // ISel view: clicking a row on either side selects the block pair it belongs
-  // to on both. A machine row also names IR values, so clicking one points at
-  // the lines that defined them; clicking the same block again clears it.
   const link = evt.target.closest("#split .urow[data-blk], #split .urow[data-refs]");
   if (link && STATE.mode === "isel") {
     const pair = link.dataset.blk == null ? null : +link.dataset.blk;
@@ -1590,8 +1385,6 @@ document.getElementById("split").addEventListener("click", evt => {
     return;
   }
 
-  // Source view: clicking either side selects that source line on both.
-  // Clicking the row that is already selected clears the correlation.
   const row = evt.target.closest("#split .urow[data-ln]");
   if (!row || STATE.mode !== "src") return;
   const line = +row.dataset.ln;
@@ -1624,8 +1417,6 @@ document.getElementById("railExpand").addEventListener("click", () => {
   resizeGraphs();
 });
 
-// Divider drag: the element just before the divider takes the space, in
-// whichever container holds it (today the IR view's before/after pair).
 {
   const splitEl = document.getElementById("split");
   splitEl.addEventListener("pointerdown", evt => {
@@ -1641,8 +1432,6 @@ document.getElementById("railExpand").addEventListener("click", () => {
     const startSize = stacked
       ? first.getBoundingClientRect().height
       : first.getBoundingClientRect().width;
-    // Keep the ratio in a variable: re-reading it out of style.flex picks up
-    // the "0" of the "0 0 62.5%" shorthand, not the basis.
     let ratio = STATE.splitRatio;
     const move = e => {
       const delta = (stacked ? e.clientY : e.clientX) - startPos;
@@ -1662,8 +1451,6 @@ document.getElementById("railExpand").addEventListener("click", () => {
 
 document.getElementById("changedOnly").addEventListener("change", () => {
   renderPassList();
-  // The structure view shares the same "only changed" filter as the pass
-  // list, so re-render it too when it is the active view.
   if (STATE.mode === "structure") renderMain();
 });
 document.getElementById("fnFilter").addEventListener("input", renderFnList);

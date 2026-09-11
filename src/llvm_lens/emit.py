@@ -12,9 +12,6 @@ from typing import Any
 
 from .diff import FnChange
 
-# opt names a whole-module dump "[module]". A module pass is attributed to the
-# functions it rewrote (report.build_lane_a), but the "[module]" pseudo-row is
-# also kept as the whole-module diff.
 MODULE_FN = "[module]"
 
 # Files copied into the report directory (paths relative to frontend/).
@@ -28,10 +25,6 @@ FRONTEND_FILES = (
     "vendor/cytoscape-dagre.js",
 )
 
-# The ask-AI credentials, written beside the manifest rather than into it: the
-# manifest is the report's data contract, and a secret does not belong in it.
-# Written only when configure-ai has stored a key, and gitignored -- a report
-# directory is meant to be shareable, so `--no-ai` must leave nothing behind.
 AI_CONFIG_ASSIGN = "window.__LLVM_LENS_AI_CONFIG__"
 
 
@@ -132,10 +125,6 @@ def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
         return None
     module_change = pass_.functions.get(MODULE_FN)
     if module_change is not None:
-        # The "[module]" pseudo-row holds the whole module, so its diff already
-        # covers every function inside it (plus any module-level edit, e.g. a
-        # global initializer). The per-function rows are attributed for the
-        # function views; adding them here as well would double count.
         added, removed = module_change.line_delta
         return {"added": added, "removed": removed}
     added = removed = 0
@@ -214,8 +203,6 @@ def emit_report(
     if ai is not None:
         _write_json_plus_script(data_dir / "ai-config", ai, AI_CONFIG_ASSIGN)
     else:
-        # A rebuild into an existing directory must not leave a previous run's
-        # credentials behind -- that is exactly the case --no-ai exists for.
         for stale in (data_dir / "ai-config.json", data_dir / "ai-config.js"):
             stale.unlink(missing_ok=True)
 

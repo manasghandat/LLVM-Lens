@@ -1,12 +1,4 @@
-/* LLVM-Lens report — Graphite, console layout.
- *
- * Left rail: pipeline (churn spine + pass list) over functions. Right: the
- * split view, a detail drawer, and a status strip that still reports what the
- * drawer holds when it is shut.
- *
- * Chrome is the UI face; only code, numbers and identifiers are monospace.
- * Colour is reserved for meaning: azure selection, green added, red removed,
- * amber spilled, violet custom pass. */
+/* LLVM-Lens report — Graphite, console layout. */
 
 :root {
   /* surfaces */
@@ -146,9 +138,6 @@ input[type="search"]:focus-visible { outline-offset: 0; border-color: var(--trac
 }
 body.rail-collapsed .workspace { grid-template-columns: 30px 1fr; gap: 8px; }
 
-/* ask AI takes a third track rather than overlaying the split view, so the
-   panes keep their width and cytoscape only needs the resize it already does
-   on any layout change. */
 body.ai-open .workspace { grid-template-columns: 22% 1fr 400px; }
 body.rail-collapsed.ai-open .workspace { grid-template-columns: 30px 1fr 400px; }
 
@@ -222,9 +211,6 @@ body.rail-collapsed .rail-edge { display: none; }
   font-variant-numeric: tabular-nums; }
 .row .name { font-size: 12px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; flex: 1; }
-/* The two numeric columns are right-aligned with a floor width: line counts
-   vary per row ("+0 −0" to "+305 −0"), and without it every row's timing
-   would sit at a different x. */
 .row .time { color: var(--faint); font-size: 10px; flex: none;
   min-width: 44px; text-align: right; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
@@ -232,8 +218,6 @@ body.rail-collapsed .rail-edge { display: none; }
   min-width: 60px; text-align: right; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
 
-/* churn bar: length is lines removed + added, split at the middle. Reading
-   167 rows of "+465 −238" is the thing this replaces. */
 .bar { display: flex; align-items: center; justify-content: flex-end; gap: 1px;
   width: 46px; height: 9px; flex: none; }
 .bar span { display: block; height: 100%; }
@@ -275,8 +259,6 @@ body.rail-collapsed .rail-edge { display: none; }
 .splt .chip { border: 0; border-radius: 0; padding: 4px 9px; }
 .splt .chip + .chip { border-left: 1px solid var(--line-strong); }
 .splt.inactive { opacity: 0.4; }
-/* A view this pass cannot show is dropped from the row entirely (the input
-   card has no diff and no CFG); [hidden] must beat the flex layout. */
 .splt .chip[hidden] { display: none; }
 .ctx { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
@@ -393,9 +375,6 @@ body.rail-collapsed .rail-edge { display: none; }
 .urow.del .umark { color: var(--del); font-weight: 700; }
 
 /* --- IR view: the whole before/after snapshots ---------------------------- */
-/* Rows reuse the diff primitives above (.urow/.uln/.utext and the add/del
- * tints); each side gets one gutter -- its own line numbers -- and no marker
- * column, since the frame already says which side it is. */
 
 .irpair { flex: 1; display: flex; gap: 5px; min-height: 0; min-width: 0;
   padding: 10px; }
@@ -415,10 +394,6 @@ body.rail-collapsed .rail-edge { display: none; }
 .irside .udiff { border: 0; border-radius: 0; min-height: 0; }
 
 /* --- Source view: IR beside the C it came from ---------------------------- */
-/* Both sides are .irside frames of .urow rows, so the gutters, sticky
- * behaviour and scrolling all come from the rules above. What is added here:
- * a second gutter carrying the mapped source line, and the correlation
- * highlight that clicking either side turns on. */
 
 .sln { color: var(--trace); opacity: 0.75; }
 .urow.smap { cursor: pointer; }
@@ -437,9 +412,6 @@ body.rail-collapsed .rail-edge { display: none; }
 
 /* --- ISel view: LLVM IR <-> machine IR -------------------------------------- */
 
-/* A row that has a counterpart on the other side is clickable; one that does
-   not -- an IR block selection dropped, a machine block the backend invented --
-   is dimmed rather than hidden, because its absence is the finding. */
 .urow.ilink { cursor: pointer; }
 .urow.ilink:hover { background: var(--panel); }
 .urow.idrop .utext, .urow.inew .utext { opacity: 0.45; }
@@ -485,8 +457,6 @@ body.rail-collapsed .rail-edge { display: none; }
   letter-spacing: 0; text-transform: none; color: var(--faint); }
 .vtab.active .count { color: var(--trace); }
 .bpanel-body { padding: 10px 12px; overflow: auto; max-height: 32vh; min-height: 80px; }
-/* A tab with nothing in it shows nothing: an empty body takes no room, so the
-   drawer shrinks to its own tab row. */
 .bpanel-body:empty { display: none; }
 .bpanel.open:has(.bpanel-body:empty) .bpanel-head { border-bottom: 0; }
 .bpanel-body .ln { white-space: pre; color: var(--dim); font-size: 12px; }
@@ -505,12 +475,8 @@ table.grid th { background: var(--panel2); color: var(--dim); font-size: 9px;
   letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500;
   text-align: left; padding: 4px 8px; border: 1px solid var(--line); }
 table.grid td { border: 1px solid var(--line); padding: 3px 8px; font-size: 12px; }
-/* A spill costs a store; a reload is the price already paid. Colour the
-   stores so a table of both reads as "here is what went to memory". */
 table.grid td.spill { color: var(--warn); }
 table.grid td.instr { white-space: pre; }
-/* MIR instructions are far wider than the panel: scroll the table, never
-   the page. */
 .tscroll { overflow-x: auto; max-height: 24vh; }
 
 .hidden { display: none; }
@@ -581,15 +547,9 @@ table.grid td.instr { white-space: pre; }
   border-bottom: 1px solid var(--line); flex: none; }
 .ai-title { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--faint); }
-/* which provider+model is actually answering, in the header where the
-   question of "who am I talking to" belongs */
 .ai-model { flex: 1; min-width: 0; text-align: right; color: var(--dim);
   font-size: 10px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; }
-/* A square target per icon rather than padding around the glyph: at the
-   topbar's 11px these three (gear, erase, close) came out cramped and easy to
-   miss, and they are the whole of the panel's controls. Sized to match the
-   header row rather than the text beside it, so the glyph has room to breathe. */
 .ai-icon { flex: none; display: inline-flex; align-items: center;
   justify-content: center; width: 28px; height: 28px; padding: 0;
   font-size: 16px; line-height: 1; border: 1px solid transparent; }
@@ -644,8 +604,6 @@ table.grid td.instr { white-space: pre; }
   color: var(--del); font-size: 11.5px; line-height: 1.6;
   overflow-wrap: anywhere; }
 
-/* A question held back because its context would have been cut. Speculative
-   (--warn), unlike the error above: nothing went wrong, a decision is wanted. */
 .ai-cut { color: var(--warn); font-size: 10px; margin-top: 4px;
   overflow-wrap: anywhere; }
 .ai-ask { border: 1px solid var(--line-strong); border-left: 2px solid var(--warn);
@@ -712,8 +670,6 @@ table.grid td.instr { white-space: pre; }
 .spine .tick.cur i { background: var(--trace); height: 3px; }
 
 /* --- function groups ------------------------------------------------------- */
-/* Past a handful of functions the list splits: what this pass changed, then
-   the rest of the module, dimmed but still listed. */
 
 .fngroup { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline;
   gap: 6px; padding: 6px 9px 3px; background: var(--panel);

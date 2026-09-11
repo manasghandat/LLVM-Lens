@@ -21,9 +21,6 @@
   <div class="meta" id="meta"></div>
   <button class="chip" id="cmdBtn" title="Show the exact clang/opt/llc commands that built this report" aria-expanded="false">commands</button>
   <button class="chip" id="aiBtn" title="Ask an AI about the selected pass or function" aria-expanded="false">ask AI</button>
-  <!-- The exact argv of every stage, dropped from the topbar. A child of the
-       header so it hangs off whatever height the header has; hidden until
-       asked for, since it is provenance, not something to read per pass. -->
   <section class="cmdsheet" id="cmdSheet" hidden>
     <div class="cmdsheet-head">
       <span class="cmdsheet-title">commands as run</span>
@@ -107,9 +104,6 @@
     </button>
   </main>
 
-  <!-- ask AI: a third grid column, so the split view keeps its own width and
-       the graphs only need a resize when the drawer opens. Loaded state comes
-       from ai.js; every id here is what it looks up. -->
   <aside class="aipanel" id="aiPanel" hidden>
     <div class="ai-head">
       <span class="ai-title">ask AI</span>
@@ -170,8 +164,6 @@
   </aside>
 </div>
 
-<!-- CFG graph stack: load order matters (dagre before cytoscape-dagre;
-     cytoscape before the extension that registers on it). -->
 <script src="vendor/cytoscape.min.js"></script>
 <script src="vendor/dagre.min.js"></script>
 <script src="vendor/cytoscape-dagre.js"></script>

@@ -1,12 +1,4 @@
-"""Frontend rendering checks that need no browser.
-
-Runs the browser-free parts of frontend/app.js under node: DOT parsing
-(parseDot), the diff builder and its two renderers (diffOps / diffHunks /
-unifiedDiffHtml for the Diff view, irSideHtml for the IR view), the C
-tokenizer behind the Source view, and — using the vendored UMD builds — a
-headless cytoscape + dagre layout of a CFG with a loop. Skipped when node is
-not installed.
-"""
+"""Frontend rendering checks that need no browser."""
 
 from __future__ import annotations
 
@@ -21,8 +13,6 @@ FRONTEND = Path(__file__).parent.parent / "src" / "llvm_lens" / "frontend"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
-# Harness: extract the CFG section of app.js, eval it, and exercise parseDot.
-# app.js must keep the CFG section between "/* --- CFG" and "/* --- boot".
 PARSE_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
@@ -36,8 +26,6 @@ eval(code);
 const failures = [];
 const check = (name, cond) => { if (!cond) failures.push(name); };
 
-// exact format cfg.py emits: the block name in its own attribute, a
-// truncated code label, and the full untruncated block body in code
 const coded = 'digraph {\n  rankdir="TB";\n  n0 [name="bb.0", label="%0 = MOV32rm", code="%0 = MOV32rm\\nJCC_1 %bb.1"];\n  n1 [name="bb.1"];\n  n0 -> n1;\n}';
 const cl = parseDot(coded);
 check("nodes parsed", cl.nodes.length === 2);
@@ -49,8 +37,6 @@ check("block with no instructions has an empty label", cl.nodes[1].label === "")
 check("...but is still named", cl.nodes[1].name === "bb.1");
 check("edges parsed", cl.edges.length === 1 && cl.edges[0][0] === 0 && cl.edges[0][1] === 1);
 
-// a report written before the name attribute existed carries the block name as
-// the label's first line; it must not end up drawn in the graph either
 const legacy = parseDot('digraph {\n  n0 [label="bb.0\\n  %0 = MOV32rm", code="%0 = MOV32rm"];\n}');
 check("legacy name from the first label line", legacy.nodes[0].name === "bb.0");
 check("legacy label drops the name line", legacy.nodes[0].label === "  %0 = MOV32rm");
@@ -64,8 +50,6 @@ check("escaped quote in code", parseDot(quoted).nodes[0].code === 'c"d');
 // empty graph parses to no nodes
 check("empty dot -> no nodes", parseDot('digraph {\n  rankdir="TB";\n}').nodes.length === 0);
 
-// labelBox sizes each node to its label (monospace metrics): boxes grow
-// with content, width is capped at CFG_FONT.maxW, and long lines re-wrap
 const short = labelBox("bb.0");
 const long = labelBox("bb.0\n  " + "x".repeat(52));
 check("short label box is small but not tiny", short.w > 40 && short.h >= 30);
@@ -78,9 +62,6 @@ if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.ex
 console.log("frontend parseDot checks passed");
 """
 
-# Harness for the diff helpers: the op stream with before/after line numbers,
-# hunking with context, and both renderers built on it — the unified
-# (git-style) Diff view and the IR view's two whole-snapshot sides.
 DIFF_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
@@ -90,8 +71,6 @@ if (start < 0 || end < 0) { console.error("diff section not found"); process.exi
 const code =
   "const escapeHtml = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));\n" +
   src.slice(start, end);
-// Function declarations in a sloppy-mode eval leak into this scope, but
-// `const` does not: re-read DIFF_CONTEXT from the eval completion value.
 const DIFF_CONTEXT = eval(code + "\nDIFF_CONTEXT;");
 const failures = [];
 const check = (name, cond) => { if (!cond) failures.push(name); };
@@ -109,8 +88,6 @@ check("removed text carried", ops[1].text === "int y;");
 const stat = diffStat("a\nb", "a\nc");
 check("stat counts one del and one add", stat.del === 1 && stat.add === 1);
 
-// A change in a long function collapses to one hunk with DIFF_CONTEXT lines
-// of context on each side; the rest is hidden.
 const long = Array.from({ length: 40 }, (_, i) => "line " + i);
 const edited = long.slice();
 edited[20] = "line 20 changed";
@@ -124,8 +101,6 @@ check("full context yields a single whole-function hunk",
       diffHunks(bigOps, Infinity)[0].rows.length === 41);
 check("unchanged text has no hunks", diffHunks(diffOps("a\nb", "a\nb")).length === 0);
 
-// Empty "before" (a function's first snapshot) is all additions, not a diff
-// against one empty line.
 const fresh = diffOps("", "a\nb");
 check("empty before -> only additions", fresh.map(o => o.op).join("") === "++");
 check("trailing newline is not a phantom line",
@@ -149,8 +124,6 @@ check("ir rows keep token highlighting",
 check("escape safety in rows", unifiedDiffHtml(diffHunks(diffOps("a", '"x<y>"')))
       .includes("&lt;"));
 
-// IR view: each side keeps every line of its own snapshot, numbered on that
-// side, with only that side's changes tinted and no marker column.
 const beforeSide = irSideHtml(ops, "-");
 const afterSide = irSideHtml(ops, "+");
 const rowCount = (h) => (h.match(/class="urow /g) || []).length;
@@ -182,9 +155,6 @@ check("ir: number", hl.includes('<span class="tok-num">1</span>'));
 check("ir: comment", hl.includes('<span class="tok-com">; comment</span>'));
 check("ir: escape safety", highlightIR('"a<b>" ; x').includes('&lt;'));
 
-// MIR annotation stripping: byte offsets, debug-location + resolved source
-// comment, and predecessors comments are display-only noise and must not
-// reach the rendered view. The cleaned instruction tokens are preserved.
 check("mir: byte offset stripped",
       !highlightIR("80B      CLFLUSH %5:gr64").includes("80B"));
 check("mir: instruction kept after offset strip",
@@ -208,11 +178,6 @@ check("mir: plain instruction untouched",
 check("mir: ordinary semicolon comment untouched",
       highlightIR("  %0 = ADD64ri32 %0, 1  ; some note").includes('<span class="tok-com">; some note</span>'));
 
-// Debug/unwind pseudo-instructions are whole lines of bookkeeping, not real
-// machine instructions -- the renderers drop them entirely (no blank rows).
-// debug-instr-number is a debug-only suffix that dangles once debug-location
-// is gone -- drop it too. The frame-setup prefix on a real instruction is
-// structural; only its debug-location tail is stripped.
 check("mir: DBG_VALUE filtered",
       isMirDebugLine("  DBG_VALUE $rdi, $noreg, !\"ptr\", !DIExpression(), debug-location !59; x.c:0 line no:12"));
 check("mir: DBG_VALUE_LIST filtered",
@@ -254,9 +219,6 @@ console.log("frontend diff checks passed");
 """
 
 
-# Harness for the view-mode gating: which of the four view chips a given pass
-# can show. The input card (build_input_pass) has no predecessor and its
-# snapshot is a whole module, so Diff and CFG are withheld there.
 MODE_HARNESS = r"""
 const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
@@ -351,12 +313,6 @@ console.log("frontend filter checks passed");
 """
 
 
-# Harness for the vendored graph stack: load cytoscape + dagre + the
-# cytoscape-dagre UMD registration under node, run a headless dagre layout on
-# a cyclic CFG, and verify ranks plus the back-edge classification used by
-# mountCfg. cytoscape-dagre's UMD does require("dagre") in node, which the
-# harness satisfies by monkeypatching _resolveFilename (Module.globalPaths is
-# not honored by node -e).
 CYTOSCAPE_HARNESS = r"""
 const fs = require("fs");
 const path = require("path");

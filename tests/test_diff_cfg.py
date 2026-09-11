@@ -97,8 +97,6 @@ default:
 def test_ir_cfg_branch():
     dot = ir_cfg_dot(IR_WITH_BRANCH, "f")
     assert dot.startswith("digraph")
-    # Labels carry instructions only -- the block name is its own attribute,
-    # never a line of the label -- and code carries the untruncated body.
     assert (
         'n0 [name="entry", label="%cmp = icmp sgt i32 %x, 0\\nbr i1 %cmp, label %then, label %else", '
         'code="%cmp = icmp sgt i32 %x, 0\\nbr i1 %cmp, label %then, label %else"]'
@@ -117,8 +115,6 @@ def test_ir_cfg_switch_continuation_labels():
 
 
 def test_ir_cfg_stops_at_function_end():
-    # opt interleaves -debug-pass-manager output after the closing brace;
-    # nothing past "}" may become block content.
     ir = (
         "define ptr @flush_cache() {\n"
         "%1:\n"
@@ -150,20 +146,13 @@ IR_UNNAMED_ENTRY = """define dso_local ptr @flush_cache(ptr %0, i32 %1) {
 
 
 def test_ir_cfg_includes_the_unnamed_entry_block():
-    # LLVM omits the entry block's label when the block is unnamed, so nothing
-    # in the text announces it -- but it is a block, and every other block's
-    # CFG hangs off it.
     dot = ir_cfg_dot(IR_UNNAMED_ENTRY, "flush_cache")
-    # Two unnamed parameters take slots 0 and 1, so the entry block is %2 --
-    # the name the preds comments use for it.
     assert 'n0 [name="2", label="br label %3"' in dot
     assert "n0 -> n1" in dot  # entry -> %3
     assert "n2 -> n1" in dot  # the back edge still resolves
 
 
 def test_ir_cfg_of_a_function_that_is_one_unnamed_block():
-    # Nothing but the entry block: without it the graph came out empty, which
-    # read as "this function has no CFG".
     dot = ir_cfg_dot(
         "; Function Attrs: noinline\n"
         "define dso_local i64 @getTime(ptr noundef %0) #0 {\n"
@@ -224,8 +213,7 @@ def _machine_function() -> MachineFunction:
 
 
 def test_machine_cfg_align16_block_headers():
-    """Post-RA headers may carry '(%ir-block.N, align 16)'; they are blocks,
-    not instructions, and their successors still resolve."""
+    """Post-RA headers carrying '(%ir-block.N, align 16)' are still blocks."""
     from llvm_lens.parsers.mir import parse_mir_snapshots
 
     dump = (

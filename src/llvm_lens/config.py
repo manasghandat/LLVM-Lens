@@ -1,17 +1,4 @@
-"""User configuration: the AI provider + key behind the report's "ask AI" panel.
-
-The report is a static file:// page, so the browser cannot read this file
-directly. `llvm-lens configure-ai` writes it once, and build_report copies it
-into the report's data/ directory as a gitignored sidecar (emit.py), which the
-frontend reads on load. The key therefore never reaches index.html, app.js or
-manifest.json -- only data/ai-config.*, which is ignored by git.
-
-That sidecar is not mirrored into the browser's own storage. The two copies
-stay apart on purpose: `configure-ai --clear` removes this file, and if the
-build's copy had also been cached in the browser it would outlive both this
-file and the report it came from, leaving the panel answering with a key the
-user had removed.
-"""
+'''User configuration: the AI provider + key behind the report's "ask AI" panel.'''
 
 from __future__ import annotations
 
@@ -20,9 +7,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-# The two wire protocols the frontend speaks. "openai-compatible" is a
-# configurable base URL, so one entry covers OpenRouter, Ollama, LM Studio,
-# vLLM and any proxy in front of OpenAI's own host.
 PROVIDERS = ("anthropic", "openai-compatible")
 
 DEFAULT_MODELS = {
@@ -61,8 +45,6 @@ def normalize(cfg: dict[str, Any]) -> dict[str, Any]:
     if model:
         out["model"] = model
     base_url = (cfg.get("base_url") or "").strip()
-    # Only kept when it differs from the built-in default, so the stored file
-    # stays minimal and a default change here still reaches the user.
     if base_url and base_url != DEFAULT_BASE_URLS[provider]:
         out["base_url"] = base_url
     api_key = (cfg.get("api_key") or "").strip()
@@ -72,11 +54,7 @@ def normalize(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_config(path: Path | None = None) -> dict[str, Any] | None:
-    """The stored config, or None when it is missing or unusable.
-
-    Read is deliberately forgiving: a corrupt or half-written file must not
-    break a report build, it just means the ask-AI panel arrives unconfigured.
-    """
+    """The stored config, or None when it is missing or unusable."""
     file = path or config_path()
     try:
         raw = json.loads(file.read_text())
@@ -95,8 +73,6 @@ def save_config(cfg: dict[str, Any], path: Path | None = None) -> Path:
     data = normalize(cfg)
     file = path or config_path()
     file.parent.mkdir(parents=True, exist_ok=True)
-    # Create with 0600 from the start: the key must never be readable by
-    # another user, not even for the instant between write and chmod.
     fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
         handle.write(json.dumps(data, indent=2) + "\n")
