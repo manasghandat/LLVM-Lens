@@ -203,6 +203,42 @@ check("mir: frame-setup prefix kept on real instruction",
 check("mir: frame-setup instruction debug-location stripped",
       !highlightIR("  frame-setup PUSH64r killed $rbp, implicit-def $rsp, implicit $rsp, debug-location !140; x.c:37:15").includes("debug-location"));
 
+// the real LLVM 22 shape: debug-location followed by :: (...) memoperand and ; file:col
+check("mir: debug-location with memoperand + source tail stripped",
+      !highlightIR("  MOV64mr %stack.0, 1, $noreg, 32, $noreg, killed %4:gr64, debug-location !148 :: (store (s64) into %ir.5, align 16); pressure.c:71:17").includes("debug-location"));
+check("mir: resolved source tail stripped with memoperand",
+      !highlightIR("  MOV64mr %stack.0, 1, $noreg, 32, $noreg, killed %4:gr64, debug-location !148 :: (store (s64) into %ir.5, align 16); pressure.c:71:17").includes("pressure.c"));
+check("mir: instruction kept after memoperand + source strip",
+      highlightIR("  MOV64mr %stack.0, 1, $noreg, 32, $noreg, killed %4:gr64, debug-location !148 :: (store (s64) into %ir.5, align 16); pressure.c:71:17")
+        .includes("MOV64mr"));
+
+// IR debug-info stripping
+check("ir: !dbg ref stripped from instruction",
+      !highlightIR("  %3 = load i64, ptr %0, align 8, !dbg !36").includes("!dbg"));
+check("ir: !dbg ref stripped from define",
+      !highlightIR("define dso_local i64 @mix16(ptr noundef %0) !dbg !26 {").includes("!dbg"));
+check("ir: !dbg ref stripped from global",
+      !highlightIR('@.str = private unnamed_addr constant [17 x i8] c"x\\0A\\00", align 1, !dbg !0').includes("!dbg"));
+check("ir: instruction kept after !dbg strip",
+      highlightIR("  %3 = load i64, ptr %0, align 8, !dbg !36").includes('<span class="tok-var">%3</span>'));
+check("ir: #dbg_declare whole line dropped",
+      isIrDebugLine("  #dbg_declare(ptr %3, !33, !DIExpression(), !34)"));
+check("ir: #dbg_value whole line dropped",
+      isIrDebugLine("  #dbg_value(ptr %0, !33, !DIExpression(), !34)"));
+check("ir: call void @llvm.dbg.value whole line dropped",
+      isIrDebugLine("  call void @llvm.dbg.value(metadata ptr %4, metadata !34, metadata !DIExpression()), !dbg !35"));
+check("ir: plain instruction not dropped",
+      !isIrDebugLine("  %3 = load i64, ptr %0, align 8, !dbg !36"));
+check("dropDebugLine drops ir debug line",
+      dropDebugLine("  #dbg_declare(ptr %3, !33, !DIExpression(), !34)"));
+check("dropDebugLine drops mir debug line",
+      dropDebugLine("  DBG_VALUE $rdi, $noreg, !\"seed\", !DIExpression(), debug-location !34"));
+// the Optimized IR card lives in the mir tab but is ir content — still stripped
+check("dropDebugLine strips ir dbg from mir-tab optimized-ir card",
+      dropDebugLine("  #dbg_value(ptr %0, !33, !DIExpression(), !34)"));
+check("dropDebugLine keeps a real instruction",
+      !dropDebugLine("  %3 = load i64, ptr %0, align 8, !dbg !36"));
+
 // C tokenizer: the Source view renders the original file beside the IR.
 const c = highlightC('  for (int i = 0; i < 0x40; i++) // loop');
 check("c: keyword", c.includes('<span class="tok-kw">for</span>'));
