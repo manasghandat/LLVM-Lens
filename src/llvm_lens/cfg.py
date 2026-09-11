@@ -14,7 +14,7 @@ BR_LABEL_RE = re.compile(r"label %([.\w\"$-]+)")
 # An unnamed parameter, as a dump prints it ("%0").
 UNNAMED_VALUE_RE = re.compile(r"%\d+\b")
 
-# Graph readability caps: up to MAX_CODE_LINES instructions, truncated to MAX_CODE_CHARS.
+# Graph readability caps on a node's label.
 MAX_CODE_LINES = 6
 MAX_CODE_CHARS = 52
 # Drop debug metadata so visible code is mostly operands.

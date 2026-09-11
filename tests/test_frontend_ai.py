@@ -1,14 +1,4 @@
-"""The ask-AI panel's browser-free half: config resolution, the system prompt,
-what one question actually sends (context assembly and its token caps), and the
-two provider request shapes.
-
-Runs frontend/ai.js under node against app.js's *real* diff helpers and IR
-tokenizer, so a change to the diff builder that broke the attached context
-fails here too. Skipped when node is not installed.
-
-ai.js must keep its sections between "/* --- ask ai: config" and
-"/* --- ask ai: ui" marker-delimited; they are what this harness reads.
-"""
+"""The ask-AI panel's browser-free half, run under node."""
 
 from __future__ import annotations
 
@@ -22,11 +12,6 @@ FRONTEND = Path(__file__).parent.parent / "src" / "llvm_lens" / "frontend"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
-# Shared prelude: app.js's diff section (so ai.js is exercised against the real
-# diffStat/diffHunks/splitLines/highlightIR), then ai.js's own sections with the
-# handful of globals app.js's lexical scope would give it at runtime stubbed.
-# Function declarations from a sloppy direct eval leak into this scope; const
-# does not, so anything ai.js declares with const is read through `AICONST`.
 PRELUDE = r"""
 const fs = require("fs");
 
@@ -50,8 +35,6 @@ function fnChange(fn) {
   return CURRENT_PASS && CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
 }
 
-// Storage, network and the DOM, enough for the file:// path: a blocked fetch
-// must fall back to injecting data/ai-config.js and reading its global.
 const STORE = new Map();
 const localStorage = {
   getItem: k => (STORE.has(k) ? STORE.get(k) : null),
@@ -60,9 +43,6 @@ const localStorage = {
 };
 const SCRIPTS = [];
 const window = { addEventListener: () => {} };
-// Enough of an element to read back what the panel says: the settings note
-// names which copy of the key is in force, and that label is the only thing
-// that makes a key the user thought they had removed visible again.
 const ELEMENTS = new Map();
 function fakeEl(id) {
   const node = { id, hidden: false, textContent: "", innerHTML: "", value: "",
@@ -102,13 +82,9 @@ let CHECKS = 0;
 const check = (name, cond) => { CHECKS++; if (!cond) failures.push(name); };
 const done = () => {
   if (failures.length) { console.error("FAIL: " + failures.join(", ")); process.exit(1); }
-  // The count is asserted by the caller: "passed" with no checks would mean the
-  // harness stopped before reaching them.
   console.log("frontend ask-ai checks passed (" + CHECKS + ")");
 };
 
-// A report sitting on one changed function of a two-function module, with the
-// selected function's source mapped into a 60-line file.
 const BEFORE = "define i32 @main() {\n  %1 = add i32 1, 1\n  ret i32 %1\n}";
 const AFTER = "define i32 @main() {\n  ret i32 2\n}";
 function useReport() {
@@ -166,8 +142,6 @@ check("context lists which functions the pass changed",
 check("context marks the selected function and its status",
   ctx.includes("selected function: main") && ctx.includes("changed by this pass"));
 check("context carries a unified diff", ctx.includes("@@ -") && ctx.includes("\n+  ret i32 2"));
-// The window opens at the first mapped line and runs for the source cap --
-// a window, not the file, however long the file is.
 const srcCap = AICONST.AI_CAPS.trimmed.srcLines;
 check("context carries the mapped source window, with line numbers",
   ctx.includes(`--- source: sample.c lines 4-${3 + srcCap} of 200`)
@@ -186,9 +160,6 @@ check("an untouched function is labelled as untouched", quiet.includes("untouche
 
 // --- the caps: an oversized diff is cut, and the user is asked first --------
 useReport();
-// Twice the line cap, so the fixture stays oversized whatever the cap is set
-// to -- and big enough that the character cap is exceeded too, since a cap
-// that only one of the two enforces is a cap nobody can reason about.
 const N = AICONST.AI_CAPS.trimmed.diffLines * 2 + 200;
 const many = Array.from({ length: N }, (_, i) => "  %" + i + " = add i32 %a, " + i);
 CURRENT_PASS.functions.main.before = many.join("\n");
@@ -208,10 +179,6 @@ check("truncate marks a line cut", truncate("a\nb\nc", 100, 2).endsWith("… (tr
 check("truncate marks a character cut",
   truncate("x".repeat(50), 10, 100).startsWith("x".repeat(10)));
 
-// --- what was cut is reported, and the full context is offered --------------
-// The answer that trailed off at "the diff truncates at block 54" is the bug
-// this covers: a silently cut selection must be named before it is sent, and
-// must be sendable in full on request.
 const cut = contextDigest();
 const cutDiff = cut.cuts[0] || {};
 check("a cut selection reports what did not fit",
@@ -237,9 +204,6 @@ check("the full context is still bounded",
 check("the full budget is bigger than the trimmed one, but not unbounded",
   AICONST.AI_CAPS.full.diffLines > AICONST.AI_CAPS.trimmed.diffLines &&
   AICONST.AI_CAPS.full.diffLines <= 20000);
-// A cap nobody's question reaches is a cap that never teaches anything: the
-// default budget has to clear an ordinary pass's whole-function diff (a few
-// hundred lines), and the prompt only earns its place past that.
 check("the default budget clears an ordinary whole-function diff",
   AICONST.AI_CAPS.trimmed.diffLines >= 400 &&
   AICONST.AI_CAPS.trimmed.diffChars >= 20000);
@@ -301,14 +265,9 @@ check("the direct-browser-access header is sent (CORS is refused without it)",
   req.headers["anthropic-dangerous-direct-browser-access"] === "true");
 check("the system prompt is a top-level field, not a message",
   req.body.system === sys && req.body.messages.every(m => m.role !== "system"));
-// An output ceiling, not a target. It has to clear adaptive thinking, which
-// current Claude models run by default and which is billed against this same
-// budget -- too low a cap spends itself thinking and returns no text at all.
 check("the reply is capped", req.body.max_tokens === AICONST.AI_MAX_TOKENS);
 check("the cap leaves room for thinking plus an answer",
   AICONST.AI_MAX_TOKENS >= 8000 && AICONST.AI_MAX_TOKENS <= 64000);
-// Thinking is on by default for current Claude models and the API default is
-// what we want; sending the parameter would 400 on models that predate it.
 check("no thinking parameter is sent, so any model name stays valid",
   !("thinking" in req.body));
 check("the configured model is requested", req.body.model === "claude-opus-5");
@@ -342,8 +301,6 @@ check("openai-compatible choice content is read",
   extractText("openai-compatible", { choices: [{ message: { content: "yo" } }] }) === "yo");
 check("an empty openai-compatible envelope is empty, not undefined",
   extractText("openai-compatible", {}) === "");
-// A reasoning model answers in reasoning_content, and some servers fill only
-// that -- which used to arrive as "the provider returned no text".
 check("a reasoning-only reply is not read as an empty one",
   extractText("openai-compatible",
     { choices: [{ message: { content: "", reasoning_content: "thought" } }] }) === "thought");
@@ -354,9 +311,6 @@ check("a part-array content is joined",
   extractText("openai-compatible",
     { choices: [{ message: { content: [{ text: "a" }, { text: "b" }] } }] }) === "ab");
 
-// --- an endpoint that streams anyway ----------------------------------------
-// The request asks for one JSON body, but some endpoints stream regardless;
-// an unparsed body used to surface as an empty answer.
 const sseOpenAI = [
   'data: {"choices":[{"delta":{"content":"folded "}}]}',
   'data: {"choices":[{"delta":{"content":"it"}}]}',
@@ -420,9 +374,6 @@ check("a non-json error body is still shown",
       /returned no text/.test(err.message) && /content: empty/.test(err.message));
   }
 
-  // The empty reply the user actually hit: adaptive thinking is on by default
-  // for current Claude models and is billed against max_tokens, so a hard
-  // question at a low cap can spend the whole budget and return no text block.
   FETCH_RESULT = { ok: true, status: 200, text: async () => JSON.stringify(
     { stop_reason: "max_tokens", content: [{ type: "thinking", thinking: "…" }] }) };
   try {
@@ -496,9 +447,6 @@ CONFIG_HARNESS = PRELUDE + r"""
     built.baseUrl === "https://api.anthropic.com");
   check("the fetched sidecar is injected by ai.js, not app.js's loader",
     FETCHED.length === 1 && FETCHED[0].url === "data/ai-config.json");
-  // The bug behind "configure-ai --clear doesn't work": the build's key used to
-  // be copied into localStorage, so it outlived both the config file and the
-  // report, and the panel kept answering after the user had removed it.
   check("the build's key is not mirrored into localStorage", STORE.size === 0);
   renderAIKeyNote();
   check("the panel names the report's build as the source of the key",
@@ -613,8 +561,6 @@ CONFIG_HARNESS = PRELUDE + r"""
 """
 
 
-# Pinned so a harness that stops early -- a thrown eval, a renamed helper --
-# cannot pass by never reaching its checks. Bump when adding one.
 PROMPT_CHECKS = 46
 PROVIDER_CHECKS = 46
 CONFIG_CHECKS = 39

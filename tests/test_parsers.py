@@ -40,8 +40,6 @@ def test_parse_changed_ir_adjacent_snapshots_do_not_leak(capture):
 
 
 def test_parse_changed_ir_function_dump_stops_at_closing_brace():
-    # opt interleaves -debug-pass-manager output right after the function's
-    # closing brace; it must not leak into the snapshot (CFG/diff content).
     stderr = (
         "*** IR Dump After LICMPass on flush_cache ***\n"
         "define ptr @flush_cache() {\n"
@@ -63,8 +61,6 @@ def test_parse_changed_ir_function_dump_stops_at_closing_brace():
 
 
 def test_parse_changed_ir_module_dump_keeps_body_but_drops_noise():
-    # Module and loop dumps have no closing brace; the body runs to the next
-    # header but pass-manager log lines are still filtered out.
     stderr = (
         "*** IR Dump After GlobalOptPass on [module] ***\n"
         "define i32 @a() {\n"
@@ -84,8 +80,6 @@ def test_parse_changed_ir_module_dump_keeps_body_but_drops_noise():
 
 
 def test_parse_changed_ir_strips_module_bookkeeping():
-    # A module dump's preamble and metadata block are not code: they are
-    # dropped so the diff shows instruction changes, not slot renumbering.
     stderr = (
         "*** IR Dump After GlobalOptPass on [module] ***\n"
         "; ModuleID = 'sample.ll'\n"
@@ -140,11 +134,7 @@ def test_split_module_functions_yields_function_dump_bodies():
         "attributes #0 = { nounwind }\n"
     )
     functions = split_module_functions(module)
-    # Definitions only: globals, types, declarations and attributes are not
-    # things a function dump ever shows.
     assert set(functions) == {"getTime", "odd name"}
-    # The "; Function Attrs:" line is part of a function dump, so it is kept
-    # here too -- otherwise pairing would report it as an added line.
     assert functions["getTime"] == (
         "; Function Attrs: noinline nounwind\n"
         "define dso_local i64 @getTime(ptr noundef %0) #0 !dbg !49 {\n"
@@ -155,8 +145,6 @@ def test_split_module_functions_yields_function_dump_bodies():
 
 
 def test_split_module_functions_round_trips_a_function_dump():
-    # Splitting a single function's dump returns that same dump, so the lane
-    # builder can apply it uniformly without special-casing the scope.
     dump = parse_changed_ir(
         "*** IR Dump After SROAPass on f ***\n"
         "; Function Attrs: nounwind\n"
@@ -232,8 +220,6 @@ def test_parse_pass_structure_fixture(capture):
     assert "X86 DAG->DAG Instruction Selection" in by_name
 
 
-# One -print-after-all structure block: a pass the PM prints for is followed by
-# a printer node, an analysis it scheduled to satisfy a requirement is not.
 STRUCTURE = """Pass Arguments:  -x86-isel -machinedomtree
   ModulePass Manager
     FunctionPass Manager
@@ -320,8 +306,7 @@ def test_parse_mir_spills_carried_values(capture):
 
 
 def test_parse_mir_spill_sites_carry_block_and_instruction():
-    """A spill is only actionable with its site: which slot, which block, and
-    the instruction that moved the value."""
+    """A spill carries its site: the slot, the block and the instruction."""
     dump = (
         "# *** IR Dump After Virtual Register Rewriter (virtregrewriter) ***:\n"
         "# Machine code for function main: NoPHIs, TracksLiveness\n"

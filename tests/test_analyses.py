@@ -99,8 +99,6 @@ def test_postdominator_tree_orders_exit_to_entry():
 
 def test_control_dependence_marks_loop_body_not_exit():
     edges = _edges(compute_analyses(MODULE)["functions"]["sum"]["cdg"])
-    # header's branch controls body and latch; exit is the merge point, so it
-    # is not control-dependent on header.
     assert ("header", "body") in edges
     assert ("header", "latch") in edges
     assert ("header", "exit") not in edges

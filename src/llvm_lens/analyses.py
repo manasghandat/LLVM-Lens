@@ -1,11 +1,4 @@
-"""Program-structure graphs derived from captured IR (PDT, CDG, DDG, PDG, MDG, CG, LNT).
-
-Everything is computed in Python from the IR text the pipeline already captured
-(the same source the CFG is built from), so none of it depends on a particular
-LLVM version. DDG is instruction-level (def-use over SSA values); PDG is
-block-level (control + block-aggregated data edges); MDG is a conservative
-last-writer-per-pointer approximation with no alias analysis.
-"""
+"""Program-structure graphs derived from captured IR (PDT, CDG, DDG, PDG, MDG, CG, LNT)."""
 
 from __future__ import annotations
 
@@ -16,8 +9,6 @@ from .parsers.print_changed import split_module_functions
 
 # "  %1 = add i32 %0, 5" -> value "1", rhs "add i32 %0, 5".
 DEF_RE = re.compile(r"^\s*%([\w.]+)\s*=\s*(.*)$")
-# SSA value operands: "%0", "%foo.1" (types like "%struct.x" never define a value,
-# so they simply produce no edge).
 OPERAND_RE = re.compile(r"%([\w.]+)")
 # A direct call: "call i32 @foo(...)" / "tail call ... @bar(...)" / "invoke ... @baz(".
 CALL_RE = re.compile(r"\b(?:call|invoke)\b[^@]*@([\w.\-]+)")
@@ -142,9 +133,6 @@ def _function_graphs(fn_ir: str) -> dict[str, str] | None:
     ipdom = {n: _immediate(pdom, n) for n in names}
     code_map = {b.name: list(b.code) for b in blocks}
 
-    # Post-dominator tree (rooted at the virtual exit). Labels show the block's
-    # instructions rather than its bare name, which is just a number for unnamed
-    # blocks.
     pdt_nodes = [(n, code_map.get(n) or [n]) for n in names] + [(EXIT, [EXIT])]
     pdt_edges = [(ipdom[n], n) for n in names if ipdom[n] is not None]
     pdt = _render_dot(pdt_nodes, pdt_edges)

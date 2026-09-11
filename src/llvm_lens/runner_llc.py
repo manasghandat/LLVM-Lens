@@ -51,8 +51,6 @@ def llc_command(
     # New-PM plugin passes (pre-codegen IR passes) and legacy machine passes.
     cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
     cmd.extend(f"-load={plugin}" for plugin in load)
-    # -print-after takes a comma-separated list of pass names; force a dump for
-    # named custom passes even when they do not change the function.
     if print_after:
         cmd.append(f"-print-after={','.join(print_after)}")
     cmd.extend(["-print-after-all", "-debug-pass=Structure", "-time-passes"])
@@ -90,8 +88,6 @@ def run_llc(
         load_pass_plugins=load_pass_plugins, load=load, print_after=print_after,
         extra_args=extra_args,
     )
-    # A report is rebuilt over its own directory: drop an earlier build's
-    # assembly so the file existing afterwards means *this* run wrote it.
     asm_path.unlink(missing_ok=True)
     try:
         result = run_capture(cmd, timeout)

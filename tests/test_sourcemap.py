@@ -1,8 +1,4 @@
-"""Source-correlation parsing: debug metadata tables and snapshot mapping.
-
-Uses canned module text rather than a live toolchain — the shapes here are
-exactly what `opt -print-module-scope` and `llc -stop-after` print on LLVM 22.
-"""
+"""Source-correlation parsing: debug metadata tables and snapshot mapping."""
 
 from __future__ import annotations
 
@@ -16,9 +12,6 @@ from llvm_lens.sourcemap import (
     parse_debug_table,
 )
 
-# A module tail carrying every node shape the resolver walks: a plain
-# location, one inlined, one inside a lexical block, a line-0 marker, the
-# subprogram a `define ... !dbg` header points at, and a global's variable.
 MODULE = """\
 @flag = global [64 x i8] zeroinitializer, !dbg !20
 define i32 @main() !dbg !10 {
@@ -58,8 +51,6 @@ def test_parse_debug_table_covers_declarations():
 
 
 def test_line_zero_is_not_a_source_location():
-    # LLVM marks compiler-synthesized instructions (phi merges, prologue) with
-    # line 0; mapping those to line 0 of the file would be a lie.
     assert 32 not in parse_debug_table(MODULE)
 
 
@@ -90,9 +81,6 @@ def test_encode_indexes_files_and_drops_unknown_ones():
     assert encode(mapping, files) == [[1, 9], None, None]
 
 
-# What opt prints under -print-changed=quiet -print-module-scope: the header
-# still names the function the pass ran on, the body is the whole module, and
-# the metadata that resolves this dump's `!dbg` follows the function.
 MODULE_SCOPE_LOG = """\
 *** IR Dump After SROAPass on getTime ***
 ; ModuleID = 'sample.ll'
@@ -113,10 +101,6 @@ define i32 @main() {
 
 
 def test_a_module_scope_dump_carries_the_table_that_resolves_it():
-    # The point of printing at module scope: no second opt run is needed,
-    # because each snapshot arrives with the metadata that resolves its own
-    # `!dbg` references -- and the body must therefore not stop at the
-    # function's "}", which the table follows.
     dumps = parse_changed_ir(MODULE_SCOPE_LOG)
     assert [(d.pass_name, d.function) for d in dumps] == [
         ("SROAPass", "getTime"), ("SimplifyCFGPass", "main"),
@@ -130,9 +114,6 @@ def test_a_module_scope_dump_carries_the_table_that_resolves_it():
         SourceRef("/repo/sample.c", 14),   # ret ... !dbg !30
         None,                              # closing brace
     ]
-    # The bookkeeping half is everything the report drops, the preamble
-    # included; a module with no debug graph in it yields an empty table
-    # rather than an error.
     assert parse_debug_table(dumps[1].metadata) == {}
 
 

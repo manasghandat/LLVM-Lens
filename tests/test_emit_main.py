@@ -128,9 +128,6 @@ def test_manifest_carries_line_deltas_for_both_lanes(tmp_path):
         time_ms=None, changed=True, is_input=True,
         functions={MODULE_FN: FnChange(MODULE_FN, "", "whole\nmodule\n")},
     )
-    # A module pass is attributed per function AND carries the whole-module row.
-    # The card's delta is the module row alone (it covers the functions too), so
-    # counting the per-function rows as well would double count.
     module_pass = ReportPass(
         id=4, lane="ir", name="GlobalOptPass", pass_id="GlobalOptPass", run_index=2,
         time_ms=None, changed=True,
@@ -154,8 +151,6 @@ def test_manifest_carries_line_deltas_for_both_lanes(tmp_path):
     assert deltas["Greedy"] == {"added": 2, "removed": 0}
     # Nothing precedes an input card, so its whole module is not "added".
     assert deltas[BACKEND_INPUT_PASS_NAME] is None
-    # The module row's diff already contains "a"'s rewrite; per-function rows on
-    # top would overstate it.
     assert deltas["GlobalOptPass"] == {"added": 1, "removed": 1}
 
 
@@ -185,14 +180,10 @@ def test_build_lane_a_on_fixture(capture):
     names = [p.name for p in passes]
     assert "SROAPass" in names
     assert "SimplifyCFGPass" in names
-    # -print-changed=quiet only dumps changed IR, but every pass that ran
-    # gets a card; transforming passes are the changed=True ones.
     assert any(p.changed for p in passes)
     assert any(not p.changed for p in passes)
     # run_index is the position in the full pipeline, so it is sequential.
     assert [p.run_index for p in passes] == list(range(1, len(passes) + 1))
-    # -print-changed=quiet dumps only the functions a pass changed, so no
-    # single card necessarily shows both; every function appears somewhere.
     all_fns = set().union(*(set(p.functions) for p in passes))
     assert {"main", "square"} <= all_fns
     assert any(p.time_ms is not None for p in passes)  # time-passes attribution
@@ -202,8 +193,6 @@ def test_build_lane_a_on_fixture(capture):
 
 
 def test_build_lane_a_pairs_the_first_dump_against_the_input_module():
-    # Without a seed the first pass to touch something diffs against nothing,
-    # which reads as "the whole function was added" -- false.
     module = (
         "; Function Attrs: nounwind\n"
         "define i32 @main() {\n"
@@ -228,9 +217,6 @@ def test_build_lane_a_pairs_the_first_dump_against_the_input_module():
 
 
 def test_build_lane_a_carries_module_pass_changes_into_the_function_track():
-    # A module pass dumps the whole module; the functions inside it are the
-    # new state of those functions, so the next function-scope dump must not
-    # be blamed for what the module pass did.
     stderr = (
         "Running pass: GlobalOptPass on [module]\n"
         "*** IR Dump After GlobalOptPass on [module] ***\n"
@@ -251,10 +237,6 @@ def test_build_lane_a_carries_module_pass_changes_into_the_function_track():
 
 
 def test_build_lane_a_lists_every_function_on_every_pass():
-    # opt only dumps what a pass changed, but the function list is how a CFG is
-    # picked, so every card carries every function in the module: the ones the
-    # pass touched marked changed, the rest carrying their current state so
-    # their CFG is still there to look at (the viewer dims them).
     module = (
         "define i32 @a() {\n  ret i32 1\n}\n"
         "\n"
@@ -287,8 +269,6 @@ def test_build_lane_a_lists_every_function_on_every_pass():
 
 
 def test_build_lane_a_fill_follows_a_module_pass_deleting_a_function():
-    # A module dump says what the module holds; a function it dropped must not
-    # keep appearing on later cards from its last known text.
     module = (
         "define i32 @a() {\n  ret i32 1\n}\n"
         "\n"
@@ -310,8 +290,6 @@ def test_build_lane_a_fill_follows_a_module_pass_deleting_a_function():
 
 
 def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():
-    # A CGSCC pass names its dump "(main)"; that is the function main, not a
-    # second entity with no history of its own.
     stderr = (
         "Running pass: InstCombinePass on main\n"
         "*** IR Dump After InstCombinePass on main ***\n"
@@ -339,8 +317,6 @@ def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():
     assert set(multi[0].functions) == {"(a, b)"}
 
 
-# One module, printed at every dump because the runner passes
-# -print-module-scope. The header still names the entity the pass ran on.
 MODULE_SCOPE = """\
 ; ModuleID = 'sample.ll'
 source_filename = "sample.c"
@@ -369,8 +345,6 @@ SEED_MODULE = strip_module_noise(MODULE_SCOPE.replace("%v", "0").splitlines())
 
 
 def test_build_lane_a_carves_the_named_entity_out_of_a_module_scope_dump():
-    # Every dump is a whole module, so a function's card must show that
-    # function -- not the module, and not a body truncated at the first "}".
     passes = build_lane_a(
         _module_scope_dump("SROAPass", "a", "1")
         + _module_scope_dump("InstCombinePass", "[module]", "3"),
@@ -390,10 +364,6 @@ def test_build_lane_a_carves_the_named_entity_out_of_a_module_scope_dump():
 
 
 def test_build_lane_a_attributes_module_scope_bodies_to_their_functions():
-    # A whole-module dump (IPSCCPPass, GlobalOpt, DeadArgumentElimination, ...)
-    # names only "[module]", yet the pass can rewrite one body. That change must
-    # be credited to the function -- a real before/after and a changed CFG --
-    # not buried in the module row where no per-function diff or CFG shows it.
     passes = build_lane_a(
         _module_scope_dump("IPSCCPPass", "[module]", "1"),
         input_ir=SEED_MODULE,
@@ -412,8 +382,7 @@ def test_build_lane_a_attributes_module_scope_bodies_to_their_functions():
 
 
 def _module(a_ret: int, b_ret: int) -> str:
-    """A two-function module body opening on the "; ModuleID" preamble, so the
-    parser marks it module-scope (whole module at every dump)."""
+    '''A two-function module body opening on the "; ModuleID" preamble.'''
     return (
         "; ModuleID = 'm.ll'\n"
         f"define i32 @a() {{\n  ret i32 {a_ret}\n}}\n"
@@ -423,12 +392,6 @@ def _module(a_ret: int, b_ret: int) -> str:
 
 
 def test_build_lane_a_module_pass_diffs_against_the_preceding_dump_not_the_seed():
-    # Regression: a module pass's "[module]" row must show only what THAT pass
-    # changed. Under -print-module-scope every dump is a whole module, so when a
-    # function pass rewrites a body and a module pass later rewrites a different
-    # one, the module pass's before-text must be the module as it just stood
-    # (the function pass's whole-module dump) -- not the stale seed, which would
-    # make the module row claim the function pass's rewrite as its own.
     stderr = (
         "Running pass: SROAPass on a\n"
         "*** IR Dump After SROAPass on a ***\n"
@@ -441,19 +404,12 @@ def test_build_lane_a_module_pass_diffs_against_the_preceding_dump_not_the_seed(
     card = next(p for p in build_lane_a(stderr, input_ir=seed)
                 if p.name == "IPSCCPPass")
     module = card.functions["[module]"]
-    # The module row diffs against SROA's dump -- the module as IPSCCP received
-    # it -- not the seed. a had already been rewritten by SROAPass, so the
-    # module-before carries a at 1 (SROA's dump), never a at 0 (the seed).
     assert module.before == strip_module_noise(_module(1, 2).splitlines())
-    # Of the module-level diff, a is context (unchanged between the two dumps);
-    # only b changed, so only b's own rewrite shows up on the module row.
     before_fns = split_module_functions(module.before)
     after_fns = split_module_functions(module.after)
     assert before_fns["a"] == after_fns["a"] == "define i32 @a() {\n  ret i32 1\n}"
     assert before_fns["b"] != after_fns["b"]
     assert "ret i32 3" in after_fns["b"]
-    # ...and the per-function rows agree: a is not credited with a change it did
-    # not make, while b's rewrite is.
     assert not card.functions["a"].changed
     assert card.functions["a"].before == "define i32 @a() {\n  ret i32 1\n}"
     assert card.functions["b"].changed
@@ -461,10 +417,6 @@ def test_build_lane_a_module_pass_diffs_against_the_preceding_dump_not_the_seed(
 
 
 def test_build_lane_a_folds_loop_dumps_into_the_function_they_run_in():
-    # A loop pass names its dump after the loop, which is not an entity the
-    # report tracks -- and under module scope the body is the whole module
-    # anyway. Folding it onto the containing function gives the card a real
-    # before/after instead of a fragment with nothing to diff against.
     passes = build_lane_a(
         _module_scope_dump("SROAPass", "a", "1")
         + _module_scope_dump("LoopRotatePass", "loop %h in function a", "2"),
@@ -479,9 +431,6 @@ def test_build_lane_a_folds_loop_dumps_into_the_function_they_run_in():
 
 
 def test_build_lane_a_maps_source_off_each_dump_s_own_metadata():
-    # The mapping needs no second opt run: a module-scope dump defines the
-    # !N it references, so the table is read off the very text the snapshot
-    # was cut from.
     stderr = (
         "Running pass: SROAPass on a\n"
         "*** IR Dump After SROAPass on a ***\n"
@@ -539,15 +488,11 @@ def test_build_input_pass_leads_the_lane_with_the_unoptimized_module():
     assert "define i32 @main() #0 !dbg !9 {" in change.after
     # Same stripping as every other card: no preamble, no metadata block.
     assert "ModuleID" not in change.after and "!DILocation" not in change.after
-    # No CFG: the view is withheld for input cards, so a graph would be dead
-    # weight in every report.
     assert card.dots == {}
 
 
 
 def test_build_input_pass_serves_the_machine_lane_too():
-    # Lane B's card is the same module after every opt pass -- the text llc
-    # actually reads -- so it lands on the machine lane, not the IR one.
     card = build_input_pass(
         INPUT_MODULE, Path("report/raw/opt-final.ll"),
         lane="mir", name=BACKEND_INPUT_PASS_NAME, note="after every opt pass",
@@ -560,8 +505,6 @@ def test_build_input_pass_serves_the_machine_lane_too():
     assert card.src_maps[MODULE_FN]
 
 def test_build_input_pass_maps_lines_through_the_modules_own_metadata():
-    # The input module is self-describing, so no harvest is needed -- but the
-    # table must be read before stripping removes it.
     card = build_input_pass(INPUT_MODULE, Path("in.ll"))
     mapping = card.src_maps[MODULE_FN]
     lines = card.functions[MODULE_FN].after.split("\n")

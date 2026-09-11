@@ -1,10 +1,4 @@
-"""The ask-AI configuration: ~/.llvm_lens_config, `llvm-lens configure-ai`,
-and the data/ai-config.* sidecar the report is built with.
-
-The key is a credential, so most of these tests are about where it does *not*
-go: never into the manifest, never into the report's HTML or JS, never printed
-back at the user, and never left behind by a rebuild that asked for no AI.
-"""
+"""The ask-AI configuration, `llvm-lens configure-ai`, and the report sidecar."""
 
 from __future__ import annotations
 
@@ -80,8 +74,6 @@ def test_load_config_is_forgiving(tmp_path):
 def test_normalize_fills_defaults_and_drops_what_is_not_set():
     assert normalize({}) == {"provider": "anthropic", "model": "claude-opus-5"}
     assert normalize({"provider": "openai-compatible"}) == {"provider": "openai-compatible"}
-    # The built-in base URL is implied, so storing it would freeze today's
-    # default into the file; a non-default one is the whole point of the field.
     assert "base_url" not in normalize({"provider": "anthropic",
                                         "base_url": "https://api.anthropic.com"})
     assert normalize({"provider": "openai-compatible",
@@ -97,12 +89,7 @@ def test_normalize_rejects_a_provider_the_frontend_cannot_speak():
 
 
 def test_the_suite_never_reads_the_developer_s_own_config():
-    """conftest points every test at a path that cannot exist.
-
-    build_report() reads the stored config to decide whether to write the
-    report's ai-config sidecar, so a test that forgets to pass ai_config would
-    otherwise copy the developer's real key into a temp directory.
-    """
+    """conftest points every test at a path that cannot exist."""
     assert config_path() != config_mod.DEFAULT_CONFIG_PATH
     assert not config_path().exists()
     assert load_config() is None
@@ -152,11 +139,7 @@ def test_configure_ai_clear_removes_the_file(home, capsys):
 
 
 def test_configure_ai_clear_says_what_it_could_not_reach(home, capsys):
-    """The file is not the only copy of the key, and --clear looked broken
-    because of it: reports built earlier carry their own copy, and a key typed
-    into the panel lives in that browser. No command-line tool can remove
-    either, so the command has to name them instead of just reporting success.
-    """
+    """--clear names the copies of the key it cannot remove."""
     save_config({"provider": "anthropic", "api_key": KEY})
     capsys.readouterr()
     main(["configure-ai", "--clear"])
@@ -240,8 +223,6 @@ def test_build_report_embeds_and_then_drops_the_credentials(home, toolchain, tmp
     assert summary["aiEmbedded"] is True
     assert json.loads((out / "data" / "ai-config.json").read_text())["api_key"] == KEY
 
-    # build_report resolves the stored config itself when not told otherwise,
-    # so the CLI's --no-ai is the only thing that has to pass {} explicitly.
     shared = build_report(SAMPLE_C, passes="mem2reg", output=out,
                           bin_dir=toolchain.bin_dir, source_map=False, ai_config={})
     assert shared["aiEmbedded"] is False

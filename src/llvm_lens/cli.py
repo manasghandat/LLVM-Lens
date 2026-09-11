@@ -152,10 +152,6 @@ def run_configure_ai(argv: Sequence[str]) -> int:
             print(f"removed {path}")
         except FileNotFoundError:
             print(f"no configuration at {path}")
-        # The file is not the only copy. Say so, or `--clear` looks like it did
-        # nothing to anyone whose panel is still answering: report directories
-        # built earlier carry their own copy, and the panel can hold a key that
-        # was typed into it, which no command-line tool can reach.
         print("reports built before now keep their own copy in "
               "data/ai-config.* -- rebuild them with --no-ai to drop it.\n"
               "a key set in the report panel itself lives in that browser, not "
@@ -183,8 +179,6 @@ def run_configure_ai(argv: Sequence[str]) -> int:
     if provider not in PROVIDERS:
         parser.error(f"unknown provider {provider!r}")
 
-    # A blank --api-key falls through to the prompt, so a flag-less run can
-    # still pick up an existing key without retyping it.
     api_key = args.api_key
     if api_key is None and interactive:
         api_key = _ask("api key", existing.get("api_key"), secret=True)
@@ -199,8 +193,6 @@ def run_configure_ai(argv: Sequence[str]) -> int:
     base_url = args.base_url
     if base_url is None:
         default_url = existing.get("base_url") or DEFAULT_BASE_URLS[provider]
-        # Only worth asking for the configurable protocol; anthropic's host is
-        # fixed and a prompt there is noise.
         if provider == "openai-compatible" and interactive:
             base_url = _ask("base url", default_url)
         else:
@@ -230,8 +222,6 @@ def run_configure_ai(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    # configure-ai is not a report build, and the build parser wants a source
-    # file it would reject as missing. Dispatch it before argparse sees argv.
     words = list(sys.argv[1:] if argv is None else argv)
     if words and words[0] in ("configure-ai", "--configure-ai"):
         return run_configure_ai(words[1:])
