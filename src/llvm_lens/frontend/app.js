@@ -1,10 +1,9 @@
-/* LLVM-Lens report viewer. Single-screen workstation, file://-safe.
- * Left rail: pass list (lane tabs: IR / machine) + function list, both
- * collapsible. Right: the main view, one of three -- CFG (cytoscape graphs),
- * Diff (unified/git-style: hunks, line numbers, +/- markers) or IR (the whole
- * before/after snapshots, side by side or stacked with a draggable divider)
- * -- plus a collapsible bottom panel with Log / Analyses / RegMap / Spills /
- * Asm tabs.
+/* LLVM-Lens report viewer. Single-screen console, file://-safe.
+ * Left rail: pipeline (churn spine + pass list, lane tabs IR / machine) over
+ * the function list, both collapsible. Right: the main view -- CFG (cytoscape
+ * graphs), Diff (unified/git-style), IR (before/after snapshots), Source, ISel,
+ * Graphs, Structure -- over a detail drawer (Log / Analyses / RegMap / Spills /
+ * Asm) and a status strip that reports what the drawer holds when it is shut.
  *
  * Data: fetch('data/manifest.json') first; browsers block fetch() on
  * file:// URLs, so we fall back to the sibling .js wrappers emitted by
@@ -428,37 +427,71 @@ function passVisible(p, onlyChanged) {
   return !onlyChanged || p.changed || p.isCustom;
 }
 
-// Lines added / removed across every function the pass touched (emit.py
-// _line_delta), the one per-pass number both lanes measure the same way.
-// Input cards carry no delta -- nothing precedes them.
-function lineDeltaHtml(p) {
+function lanePasses() {
+  return passSummaries().filter(p => p.lane === STATE.lane);
+}
+
+// What the list currently shows: the lane, minus the "changed" filter and the
+// name filter. The spine ignores both -- it is a map of the whole lane.
+function listedPasses() {
+  const q = (document.getElementById("passFilter").value || "").trim().toLowerCase();
+  const onlyChanged = document.getElementById("changedOnly").checked;
+  return lanePasses().filter(p =>
+    passVisible(p, onlyChanged) && (!q || p.name.toLowerCase().includes(q)));
+}
+
+// Lines added + removed (emit.py _line_delta), the one per-pass number both
+// lanes measure the same way. Input cards carry no delta -- nothing precedes them.
+function churn(p) {
+  return p.lineDelta ? p.lineDelta.added + p.lineDelta.removed : 0;
+}
+
+const BAR_W = 46;   // must match .bar in style.css
+
+// A bar sized to the churn, split into removed and added: 167 rows of
+// "+465 −238" do not scan, a bar does.
+function churnBarHtml(p, max) {
   const d = p.lineDelta;
-  if (!d) return '<span class="stat"></span>';
-  return `<span class="stat" title="lines added / removed">` +
-    `<span class="plus">+${d.added}</span> <span class="minus">−${d.removed}</span></span>`;
+  if (!d || !churn(p)) return '<span class="bar none"></span>';
+  const w = n => Math.max(n ? 1 : 0, Math.round(n / max * BAR_W));
+  return `<span class="bar" title="+${d.added} −${d.removed}">` +
+    `<span class="del" style="width:${w(d.removed)}px"></span>` +
+    `<span class="add" style="width:${w(d.added)}px"></span></span>`;
 }
 
 function renderPassList() {
-  const onlyChanged = document.getElementById("changedOnly").checked;
-  const passes = passSummaries().filter(p =>
-    p.lane === STATE.lane && passVisible(p, onlyChanged));
-  const rows = passes.map(p => {
-    const idx = String(p.runIndex).padStart(3, "0");
-    return `
+  const passes = listedPasses();
+  const max = Math.max(1, ...lanePasses().map(churn));
+  const rows = passes.map(p => `
       <div class="row ${p.changed || p.isCustom ? "" : "dim"} ${p.id === STATE.passId ? "sel" : ""}" data-id="${p.id}">
-        <span class="idx">#${idx}</span>
+        <span class="idx">#${String(p.runIndex).padStart(3, "0")}</span>
         <span class="name">${escapeHtml(p.name)}</span>
         ${p.isCustom ? '<span class="badge" title="custom pass (--custom-pass)">custom</span>' : ""}
-        ${p.changed ? '<span class="dot" title="changed IR"></span>' : ""}
         ${p.spillCount ? `<span class="warn" title="${p.spillCount} spills">⚠${p.spillCount}</span>` : ""}
-        ${lineDeltaHtml(p)}
-        <span class="time">${p.timeMs != null ? p.timeMs.toFixed(2) + " ms" : ""}</span>
-      </div>`;
-  }).join("");
-  document.getElementById("passList").innerHTML =
-    rows || `<div class="row empty">(no ${STATE.lane === "ir" ? "IR" : "machine"} passes captured)</div>`;
+        ${churnBarHtml(p, max)}
+        <span class="time" title="milliseconds">${p.timeMs != null ? p.timeMs.toFixed(2) : ""}</span>
+      </div>`).join("");
+  document.getElementById("passList").innerHTML = rows || `<div class="row empty">(no ${
+    lanePasses().length ? "passes match the filter"
+      : (STATE.lane === "ir" ? "IR" : "machine") + " passes captured"})</div>`;
+  document.getElementById("passCount").textContent = passes.length;
   document.querySelectorAll("#passList .row[data-id]").forEach(r =>
     r.addEventListener("click", () => selectPass(+r.dataset.id)));
+  renderSpine(max);
+}
+
+// The lane as one column of ticks: length is churn, amber where the pass
+// carries spills, azure on the selected pass.
+function renderSpine(max) {
+  document.getElementById("spine").innerHTML = lanePasses().map(p => {
+    const c = churn(p);
+    const w = c ? Math.max(3, Math.round(c / max * 14)) : 2;
+    const cls = ["tick", p.spillCount ? "spill" : "", p.id === STATE.passId ? "cur" : ""]
+      .filter(Boolean).join(" ");
+    return `<span class="${cls}" data-id="${p.id}" title="#${
+      String(p.runIndex).padStart(3, "0")} ${escapeHtml(p.name)}">` +
+      `<i style="width:${w}px"></i></span>`;
+  }).join("");
 }
 
 async function selectPass(id) {
@@ -466,6 +499,8 @@ async function selectPass(id) {
   STATE.fn = null;
   CURRENT_PASS = null;
   renderPassList();
+  const row = document.querySelector("#passList .row.sel");
+  if (row) row.scrollIntoView({ block: "nearest" });
   renderFnList();
   renderMain();
   renderBottom();
@@ -490,37 +525,57 @@ async function selectPass(id) {
 
 /* --- rail: function list --------------------------------------------------- */
 
-function renderFnList() {
-  const q = (document.getElementById("fnFilter") || {}).value || "";
-  const names = fnNames().filter(n => !q || n.toLowerCase().includes(q.toLowerCase()));
-  const rows = names.map(n => {
-    const ch = fnChange(n);
-    const changed = ch && ch.changed;
-    let stat = "";
-    if (changed) {
-      const { del, add } = diffStat(ch.before, ch.after);
-      stat = `<span class="stat"><span class="minus">−${del}</span> <span class="plus">+${add}</span></span>`;
-    }
-    return `
+const FN_GROUP_AT = 8;   // below this, a module is short enough to list flat
+
+function fnRowHtml(n) {
+  const ch = fnChange(n);
+  const changed = ch && ch.changed;
+  let stat = "";
+  if (changed) {
+    const { del, add } = diffStat(ch.before, ch.after);
+    stat = `<span class="stat"><span class="minus">−${del}</span> <span class="plus">+${add}</span></span>`;
+  }
+  return `
       <div class="row ${changed ? "" : "dim"} ${n === STATE.fn ? "sel" : ""}" data-fn="${escapeHtml(n)}">
         <span class="name">${escapeHtml(n)}</span>
         ${changed ? '<span class="dot"></span>' : ""}
-        ${stat}
+        ${stat || '<span class="stat"></span>'}
       </div>`;
-  }).join("");
+}
+
+function renderFnList() {
+  const q = ((document.getElementById("fnFilter") || {}).value || "").toLowerCase();
+  const all = fnNames();
+  const names = all.filter(n => !q || n.toLowerCase().includes(q));
+  let rows;
+  // A long module splits: what this pass changed, then the rest -- dimmed but
+  // still listed, because "this pass did nothing here" is also an answer.
+  if (all.length >= FN_GROUP_AT && CURRENT_PASS) {
+    const group = (label, list) => list.length
+      ? `<div class="fngroup">${label}<span class="count">${list.length}</span></div>`
+        + list.map(fnRowHtml).join("")
+      : "";
+    const changed = names.filter(n => (fnChange(n) || {}).changed);
+    rows = group("changed by this pass", changed)
+      + group("rest of module", names.filter(n => !(fnChange(n) || {}).changed));
+  } else {
+    rows = names.map(fnRowHtml).join("");
+  }
   document.getElementById("fnList").innerHTML =
-    rows || (fnNames().length
+    rows || (all.length
       ? '<div class="row empty">(no functions match the filter)</div>'
       : '<div class="row empty">(no functions captured)</div>');
-  document.getElementById("fnCount").textContent = fnNames().length;
+  document.getElementById("fnCount").textContent = all.length;
   document.querySelectorAll("#fnList .row[data-fn]").forEach(r =>
-    r.addEventListener("click", () => {
-      STATE.fn = r.dataset.fn;
-      renderFnList();
-      renderMain();
-      renderCtx();
-      renderBottom();  // the RegMap table is per function, so it moves too
-    }));
+    r.addEventListener("click", () => selectFn(r.dataset.fn)));
+}
+
+function selectFn(name) {
+  STATE.fn = name;
+  renderFnList();
+  renderMain();
+  renderCtx();
+  renderBottom();  // the RegMap and Spills tables are per function
 }
 
 /* --- main view: context line, panes ---------------------------------------- */
@@ -1029,36 +1084,57 @@ function applyIselHighlight(scrollTo) {
 
 /* --- bottom panel ---------------------------------------------------------- */
 
+// [{ tab, count }] -- the count is what the tab holds, shown before you open it.
 function bottomTabs() {
   // An input card ran no analyses and allocated no registers; only its Log,
   // which says where the module came from, has anything to show.
-  if (isInputCard()) return ["Log"];
-  const tabs = ["Log", "Analyses"];
+  if (isInputCard()) return [{ tab: "Log" }];
+  const runs = ((currentPassSummary() || {}).analysisCounts || {}).run;
+  const tabs = [{ tab: "Log" }, { tab: "Analyses", count: runs || 0 }];
   // Only the register allocator's card carries assignments, and only for the
   // functions it assigned: offering the tab anywhere else promises a table that
   // is not there.
-  if (CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn]) tabs.push("RegMap");
+  const regMap = CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn];
+  if (regMap) tabs.push({ tab: "RegMap", count: Object.keys(regMap).length });
   // Same rule for spills: a function the allocator kept in registers has no
   // sites to list, and every pass before the allocator has none at all.
-  if (CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []).length) tabs.push("Spills");
-  if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push("Asm");
+  const sites = CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []);
+  if (sites && sites.length) tabs.push({ tab: "Spills", count: sites.length });
+  if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push({ tab: "Asm" });
   return tabs;
 }
 
 function renderBottom() {
   const tabs = bottomTabs();
-  if (!tabs.includes(STATE.bottomTab)) STATE.bottomTab = "Log";
+  if (!tabs.some(t => t.tab === STATE.bottomTab)) STATE.bottomTab = "Log";
   document.getElementById("bottomTabs").innerHTML = tabs.map(t =>
-    `<button class="vtab ${t === STATE.bottomTab ? "active" : ""}" data-tab="${t}">${t}</button>`
-  ).join("");
+    `<button class="vtab ${t.tab === STATE.bottomTab ? "active" : ""}" data-tab="${t.tab}">` +
+    `${t.tab}${t.count ? `<span class="count">${t.count}</span>` : ""}</button>`).join("");
   document.getElementById("bottom").classList.toggle("open", STATE.bottomOpen);
-  const chev = document.getElementById("bottomChev");
-  chev.textContent = STATE.bottomOpen ? "⌄" : "▸ collapsed";
-  chev.classList.toggle("collapsed", !STATE.bottomOpen);
-  chev.title = STATE.bottomOpen ? "collapse panel" : "expand panel";
   document.getElementById("bottomBody").innerHTML = STATE.bottomOpen ? bottomBodyHtml() : "";
+  renderStrip(tabs);
   document.querySelectorAll("#bottomTabs .vtab").forEach(b =>
     b.addEventListener("click", () => { STATE.bottomTab = b.dataset.tab; renderBottom(); }));
+}
+
+// The strip is the drawer's head moved below it: which pass, how long it took,
+// and a badge per tab. Shut, it is the only thing left of the drawer.
+function renderStrip(tabs) {
+  const s = currentPassSummary();
+  const muted = text => `<span class="muted">${text}</span>`;
+  document.getElementById("stripWho").innerHTML = s
+    ? `#${String(s.runIndex).padStart(3, "0")} ${escapeHtml(s.name)}`
+      + (s.timeMs != null ? " " + muted(`· ${s.timeMs.toFixed(2)} ms`) : "")
+      + (STATE.fn ? " " + muted(`· ${escapeHtml(STATE.fn)}`) : "")
+    : "no pass selected";
+  document.getElementById("stripBadges").innerHTML = tabs.map(t => {
+    const on = STATE.bottomOpen && t.tab === STATE.bottomTab;
+    const cls = ["strip-badge", on ? "on" : "", t.tab === "Spills" ? "warn" : ""];
+    return `<span class="${cls.filter(Boolean).join(" ")}" data-tab="${t.tab}">` +
+      `${t.count ? t.count + " " : ""}${t.tab.toLowerCase()}</span>`;
+  }).join("");
+  document.getElementById("strip").setAttribute("aria-expanded", String(STATE.bottomOpen));
+  document.getElementById("stripCaret").textContent = STATE.bottomOpen ? "⌄" : "⌃";
 }
 
 function bottomBodyHtml() {
@@ -1118,12 +1194,11 @@ function bottomBodyHtml() {
 let CFG_PENDING = [];
 const CFG_INSTANCES = new Set();
 
-// Mirrors the style.css token system: --well canvas, --panel2 nodes,
-// --line-strong borders, --ink labels, --entry entry block, --del back
-// edges, --trace selection.
+// Mirrors the style.css token system: --panel2 nodes, --line-strong borders,
+// --ink labels, --entry entry block, --del back edges, --trace selection.
 const CFG_COLORS = {
-  node: "#1a2136", border: "#3b4a6b", entry: "#8fd6a4",
-  text: "#c9d6ec", edge: "#54648c", back: "#e2959b", accent: "#79c9dc",
+  node: "#1b1f24", border: "#333a43", entry: "#74c48a",
+  text: "#dfe4ea", edge: "#4a535f", back: "#e3767f", accent: "#7aa2f7",
 };
 
 // Label metrics. The node font is monospace, so character width is uniform
@@ -1275,7 +1350,7 @@ function mountCfg(el, dot) {
         "text-halign": "center",
         "padding": "0px",
         // Lift labels off the graticule dots behind the canvas.
-        "text-outline-color": "#0c101b",
+        "text-outline-color": "#0b0d10",
         "text-outline-width": 2,
         "text-outline-opacity": 0.9,
       }},
@@ -1525,11 +1600,18 @@ document.getElementById("split").addEventListener("click", evt => {
   applySrcHighlight(row.closest(".cmapside") ? "irmap" : "cmapside");
 });
 
-// Bottom panel collapse + tab switching.
-document.getElementById("bottomChev").addEventListener("click", () => {
-  STATE.bottomOpen = !STATE.bottomOpen;
+// Status strip: a badge opens the drawer on that tab, anywhere else toggles it.
+document.getElementById("strip").addEventListener("click", evt => {
+  const badge = evt.target.closest(".strip-badge");
+  if (badge) {
+    const same = STATE.bottomOpen && STATE.bottomTab === badge.dataset.tab;
+    STATE.bottomTab = badge.dataset.tab;
+    STATE.bottomOpen = !same;
+  } else {
+    STATE.bottomOpen = !STATE.bottomOpen;
+  }
   renderBottom();
-  resizeGraphs();  // the split view just took (or gave back) the panel's height
+  resizeGraphs();  // the split view just took (or gave back) the drawer's height
 });
 
 // Rail collapse / expand.
@@ -1585,5 +1667,33 @@ document.getElementById("changedOnly").addEventListener("change", () => {
   if (STATE.mode === "structure") renderMain();
 });
 document.getElementById("fnFilter").addEventListener("input", renderFnList);
+document.getElementById("passFilter").addEventListener("input", renderPassList);
+
+// The spine is a second way into the same list.
+document.getElementById("spine").addEventListener("click", evt => {
+  const tick = evt.target.closest(".tick[data-id]");
+  if (tick) selectPass(+tick.dataset.id);
+});
+
+// Step without leaving the keyboard: j/k through passes, [/] through functions.
+document.addEventListener("keydown", evt => {
+  if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+  if (evt.target.closest("input, textarea")) return;
+  const step = (list, current, delta) => {
+    const i = list.indexOf(current);
+    return list[Math.min(list.length - 1, Math.max(0, (i < 0 ? 0 : i + delta)))];
+  };
+  if (evt.key === "j" || evt.key === "k") {
+    const ids = listedPasses().map(p => p.id);
+    const next = step(ids, STATE.passId, evt.key === "j" ? 1 : -1);
+    if (next != null && next !== STATE.passId) selectPass(next);
+  } else if (evt.key === "[" || evt.key === "]") {
+    const next = step(fnNames(), STATE.fn, evt.key === "]" ? 1 : -1);
+    if (next && next !== STATE.fn) selectFn(next);
+  } else {
+    return;
+  }
+  evt.preventDefault();
+});
 
 window.addEventListener("DOMContentLoaded", boot);
