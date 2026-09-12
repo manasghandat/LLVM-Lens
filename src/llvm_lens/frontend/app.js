@@ -207,11 +207,20 @@ function isMirDebugLine(line) {
 }
 
 function cleanMirLine(line) {
-  // Instruction byte-offset prefix: "80B      CLFLUSH" -> "  CLFLUSH".
   line = line.replace(/^(\d+B)\s+/, "  ");
-  line = line.replace(/,?\s*debug-location\s+!\d+(\s*;[^;]*)?$/, "");
   line = line.replace(/,?\s*debug-instr-number\s+\d+/, "");
+  line = line.replace(/,?\s*debug-location\s+!\d+/, "");
+  line = line.replace(/\s*; [^;]*\.\w+:\d+(?::\d+)?( line no:\d+)?\s*$/, "");
+  line = line.replace(/,?\s*!dbg !\d+/, "");
   return line;
+}
+
+function isIrDebugLine(line) {
+  return /^\s*(#dbg_(declare|value)|call void @llvm\.dbg\.(declare|value))/.test(line);
+}
+
+function dropDebugLine(line) {
+  return isMirDebugLine(line) || isIrDebugLine(line);
 }
 
 function highlightIR(text) {
@@ -588,7 +597,7 @@ function diffPaneHtml() {
       `<div class="cfg-empty">(${escapeHtml(STATE.fn)} unchanged — nothing to diff)</div>`);
   }
   const { ops, del, add } = diffStat(ch.before, ch.after);
-  const realOps = ops.filter(o => !isMirDebugLine(o.text));
+  const realOps = ops.filter(o => !dropDebugLine(o.text));
   const full = STATE.diffContext === "full";
   const hunks = diffHunks(realOps, full ? Infinity : DIFF_CONTEXT);
   const chips = ["hunks", "full"].map(v =>
@@ -615,7 +624,7 @@ function irPaneHtml() {
   const ch = fnChange(STATE.fn);
   if (!ch) return pane("IR", "", "", '<div class="cfg-empty">(select a function)</div>');
   const { ops, del, add } = diffStat(ch.before, ch.after);
-  const realOps = ops.filter(o => !isMirDebugLine(o.text));
+  const realOps = ops.filter(o => !dropDebugLine(o.text));
   const side = (label, mark, count, empty) => `
     <div class="irside">
       <div class="irside-head">
@@ -660,7 +669,7 @@ function srcPaneHtml() {
   if (!ch) return empty("(select a function)");
   const srcMap = ch.srcAfter || [];
   const allLines = splitLines(ch.after);
-  const keep = allLines.map((t, i) => !isMirDebugLine(t) && i < srcMap.length);
+  const keep = allLines.map((t, i) => !dropDebugLine(t) && i < srcMap.length);
   const lines = allLines.filter((t, i) => keep[i]);
   const map = srcMap.filter((r, i) => keep[i]);
   const tally = srcFileTally(map);
