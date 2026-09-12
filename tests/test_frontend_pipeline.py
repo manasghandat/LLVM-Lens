@@ -401,19 +401,26 @@ check("the span and its members are told apart by the dash, as in the graph",
 // "all of the time", which no cell can mean.
 const barGeom = label => {
   const w = (item(label).match(/width:(\d+)px/g) || []).map(s => +s.match(/\d+/)[0]);
-  return { track: w[0], fill: w.slice(1).reduce((a, b) => a + b, 0), segs: w.length - 1 };
+  const cols = [...item(label).matchAll(/background-color:([^;"]+)/g)].map(m => m[1]);
+  return { track: w[0], fill: w.slice(1).reduce((a, b) => a + b, 0), segs: w.length - 1,
+           trackCol: cols[0], segCols: cols.slice(1) };
 };
 [["share of time", "time bar", 1], ["lines removed / added", "churn bar", 2]]
   .forEach(([label, what, segs]) => {
     const g = barGeom(label);
     check("the " + what + " is a fill on a longer track, so it reads as a share",
           g.segs === segs && g.fill > 0 && g.fill < g.track, JSON.stringify(g));
-    // The track is what makes the fill a share, so it has to be drawn, and in
-    // a colour the graph itself uses rather than one invented for the key.
-    check("...over a track drawn in the graph's own recessive fill",
-          (item(label).match(/background-color:([^;"]+)/) || [])[1]
-          === rule("node.agg")["background-color"],
-          (item(label).match(/background-color:([^;"]+)/) || [])[1]);
+    // The key sits on --panel, which is also the fill node.agg paints with, so
+    // a track in that colour draws nothing and the fill floats in dead space.
+    check("...on a track that is really drawn, not one the key's own panel swallows",
+          g.trackCol === rule("node")["background-color"]
+          && g.trackCol !== rule("node.agg")["background-color"], g.trackCol);
+    check("...in a colour of its own, never one of the segments riding on it",
+          g.segCols.indexOf(g.trackCol) < 0, JSON.stringify(g));
+    // Whatever trails the fill is read as space between a mark and its label,
+    // so the track stays short and the fill covers most of it.
+    check("...left short, so the mark ends near the text it explains",
+          g.track - g.fill <= 12, JSON.stringify(g));
   });
 // The two bars key the two things a cell measures, so they belong side by
 // side with the rest of the marks, churn first.
