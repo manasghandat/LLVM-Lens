@@ -50,8 +50,9 @@ body {
 
 /* everything that is code, an identifier or a number stays monospace */
 .meta, .udiff, pre.raw, .cmdline, table.grid, .cfg-cy-detail pre, .cfg-cy-zoom,
-.bpanel-body .ln, .row .idx, .row .time, .row .stat, .panel-count, .pane-stat,
-.strip, .fngroup .count, input[type="search"] { font-family: var(--mono); }
+.pipe-cy-detail pre, .bpanel-body .ln, .row .idx, .row .time,
+.row .stat, .panel-count, .pane-stat, .strip, .fngroup .count,
+input[type="search"] { font-family: var(--mono); }
 
 ::selection { background: var(--trace-bg); }
 :focus-visible { outline: 2px solid var(--trace); outline-offset: 2px; }
@@ -533,6 +534,59 @@ table.grid td.instr { white-space: pre; }
   font-variant-numeric: tabular-nums; }
 .ptree-time { color: var(--faint); font-size: 10px; flex: none;
   font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+
+/* --- pipeline flow: collapsed pass chains, one serpentine ------------------- */
+
+.pipe-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 10px; }
+
+/* The Flow view's key: one wrapping row naming every mark the graph draws. */
+.pipe-legend { flex: none; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px 13px; margin: 0 0 8px; padding: 7px 11px; font-size: 11px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
+.pipe-legend .pl-it { display: inline-flex; align-items: center; gap: 5px;
+  white-space: nowrap; }
+.pipe-legend .pl-it em { font-style: normal; color: var(--faint); }
+.pipe-legend .pl-it b { font-weight: 400; color: var(--ink); }
+.pl-sw { width: 15px; height: 12px; flex: none; border: 1.5px solid;
+  border-radius: 2px; }
+.pl-ln { width: 26px; height: 0; flex: none; }
+/* A bar is a fill on a track, so the fill reads as a share of something. */
+.pl-bar { display: inline-flex; gap: 1px; height: 6px; flex: none;
+  border-radius: 1px; overflow: hidden; }
+.pl-bar s { display: block; height: 6px; text-decoration: none; }
+
+.pipe-cy { flex: 1; display: flex; flex-direction: column; min-height: 0;
+  min-width: 0; padding: 16px 8px 8px; }
+.pipe-cy-frame { position: relative; background: var(--well);
+  border: 1px solid var(--line); border-radius: var(--r); flex: 1; min-height: 0;
+  display: flex; }
+/* Same contract as the CFG canvas: cytoscape owns pan and zoom, so there is
+   no scroll viewport here. */
+.pipe-cy-canvas { flex: 1; min-height: 0; min-width: 0; background-image:
+  radial-gradient(circle, rgba(121, 201, 220, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px; }
+
+/* the selected node's full metrics, and the view's only two actions */
+.pipe-cy-detail { flex: none; margin-top: 8px; }
+.pipe-cy-detail:empty { display: none; }
+.pipe-detail-in { display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 14px; padding: 8px 11px; background: var(--panel);
+  border: 1px solid var(--line); border-left: 2px solid var(--trace);
+  border-radius: var(--r); }
+.pipe-detail-head { font-family: var(--mono); font-size: 11px; color: var(--trace); }
+.pipe-detail-stats, .pipe-detail-acts { display: flex; flex-wrap: wrap;
+  align-items: center; gap: 4px 12px; }
+.pipe-detail-acts { margin-left: auto; }
+.pm { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+.pm b { color: var(--faint); font-weight: 400; margin-right: 4px; }
+.pipe-members { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.pipe-act { font: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer;
+  color: var(--ink); background: var(--well); border: 1px solid var(--line-strong);
+  border-radius: var(--r); }
+.pipe-act:hover { color: var(--trace); border-color: var(--trace); }
+
+/* the pane's [both] [lane] lens */
+.pipe-cy .ptab { font-size: 10px; }
 
 /* --- ask AI panel ----------------------------------------------------------- */
 
