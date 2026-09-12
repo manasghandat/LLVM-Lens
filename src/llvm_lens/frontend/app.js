@@ -1279,6 +1279,9 @@ const PIPE_AGG_H = 58;     // collapsed-span header
 const PIPE_CHILD_H = 42;   // one inlined pass inside an expanded span
 const PIPE_COL_GAP = 40;
 const PIPE_LEGEND_TRACK = 26;   // how long a key bar is, filled to its share
+const PIPE_BAR_H = 3;           // how tall a cell's bar is
+const PIPE_BAR_INSET = 7;       // clear of the cell's rounded corner
+const PIPE_BAR_LIFT = 3;        // clear of the cell's bottom border
 const PIPE_ROW_GAP = 46;
 const PIPE_MARGIN = 22;
 const PIPE_COLS = 5;          // cells per row, the target
@@ -1621,7 +1624,7 @@ function pipeNodeLabel(n, charW, maxLabelW) {
 }
 
 function pipeBar(n, kind, ctx) {
-  const w = 120, h = 3;
+  const w = 120, h = PIPE_BAR_H;
   let segs = [];
   if (kind === "pass" && ctx.maxChurn > 0 && pipeChurn(n) > 0) {
     const scale = w / ctx.maxChurn;
@@ -1633,13 +1636,15 @@ function pipeBar(n, kind, ctx) {
     segs = [{ w: Math.max(2, Math.round(n.timeMs / ctx.laneTotalMs * w)), c: PIPE_COLORS.trace }];
   }
   const used = segs.reduce((s, x) => s + x.w, 0);
+  // Set in from both ends, so either pinning edge clears that corner's curve.
   const rects = segs.map((s, i) => {
-    const x = segs.slice(0, i).reduce((a, b) => a + b.w, 0);
+    const x = PIPE_BAR_INSET + segs.slice(0, i).reduce((a, b) => a + b.w, 0);
     return `<rect x="${x}" y="0" width="${s.w}" height="${h}" fill="${s.c}"/>`;
   }).join("");
-  const width = Math.max(used, 1);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${rects}</svg>`;
-  return { bg: "data:image/svg+xml;utf8," + encodeURIComponent(svg), bw: used ? used + "px" : "0px" };
+  const width = Math.max(used, 1) + 2 * PIPE_BAR_INSET;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" `
+    + `height="${h + PIPE_BAR_LIFT}">${rects}</svg>`;
+  return { bg: "data:image/svg+xml;utf8," + encodeURIComponent(svg), bw: used ? width + "px" : "0px" };
 }
 
 function pipeClassOf(n) {
@@ -1951,7 +1956,7 @@ function pipeStyle() {
       "background-image": "data(bg)",
       "background-fit": "none",
       "background-width": "data(bw)",
-      "background-height": "3px",
+      "background-height": `${PIPE_BAR_H + PIPE_BAR_LIFT}px`,
       "background-position-x": "0px",
       "background-position-y": "100%",
       "background-clip": "none",

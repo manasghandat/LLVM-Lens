@@ -459,6 +459,46 @@ check("...at the width its own data gives it, so length still means weight",
       && rule("node")["background-fit"] === "none",
       JSON.stringify([rule("node")["background-width"], rule("node")["background-fit"]]));
 
+// Measured off a painted cell: how far the rounded corner cuts in, by height above the bottom edge.
+const CORNER_CUT = { 1: 8, 2: 4, 3: 3, 4: 2, 5: 1, 6: 1 };
+const cutAt = d => CORNER_CUT[d] || 0;
+const svgOf = b => decodeURIComponent(b.bg.replace("data:image/svg+xml;utf8,", ""));
+const attr = (b, a) => +svgOf(b).match(new RegExp("<svg[^>]*" + a + '="([\\d.]+)"'))[1];
+const barRects = b =>
+  [...svgOf(b).matchAll(/<rect x="([\d.]+)" y="(\d+)" width="([\d.]+)" height="([\d.]+)"/g)]
+    .map(m => ({ x: +m[1], y: +m[2], w: +m[3], h: +m[4] }));
+
+const BAR_CTX = { maxChurn: 60, laneTotalMs: 100 };
+[["churn", pipeBar({ removed: 30, added: 10 }, "pass", BAR_CTX)],
+ ["time", pipeBar({ timeMs: 40 }, "agg", BAR_CTX)]].forEach(([what, b]) => {
+  const rs = barRects(b), last = rs[rs.length - 1];
+  check("the " + what + " bar's ink starts in from its image's leading edge",
+        rs[0].x > 0, JSON.stringify(rs));
+  // Both ends, because the cell pins this image by one edge or the other and
+  // the same image has to clear the curve either way.
+  check("...and ends in from the trailing edge by as much, so either pinning"
+        + " side clears the corner",
+        attr(b, "width") - (last.x + last.w) === rs[0].x,
+        JSON.stringify([attr(b, "width"), last.x + last.w, rs[0].x]));
+  check("...with the image taller than the ink, holding it off the bottom border",
+        attr(b, "height") - rs[0].h > 0 && rs.every(r => r.y === 0),
+        JSON.stringify([attr(b, "height"), rs[0].h]));
+  // The inset only helps if it beats the curve at the lowest row the ink covers.
+  const lift = attr(b, "height") - rs[0].h;
+  const needed = Math.max(...Array.from({ length: rs[0].h }, (_, i) => cutAt(lift + i + 1)));
+  check("...by more than the curve cuts in over the rows the ink covers",
+        rs[0].x > needed, "inset " + rs[0].x + " against " + needed + " needed");
+  check("...on an image no wider than the bar it reports",
+        attr(b, "width") <= parseFloat(b.bw) + 0.5,
+        JSON.stringify([attr(b, "width"), b.bw]));
+});
+// The image is taller than its ink, so it has to be drawn at that size: squashed
+// into a shorter box the ink slides back down toward the corner it just cleared.
+const sampleBar = pipeBar({ removed: 30, added: 10 }, "pass", BAR_CTX);
+check("the cell draws that image at the very size the bar built it",
+      rule("node")["background-height"] === attr(sampleBar, "height") + "px",
+      JSON.stringify([rule("node")["background-height"], attr(sampleBar, "height") + "px"]));
+
 // Every consecutive pair must be joined -- this is the check that catches a
 // dropped or duplicated edge.
 check("each edge starts at the next cell in the chain",
