@@ -302,7 +302,8 @@ let STATE = {
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
-  lastMode: "diff",          // last non-structure detail mode — restored when drilling in
+  lastMode: "diff",          // last overview detail mode — restored when drilling in
+  pipeBoth: true,            // Flow: draw both lanes, or just the selected one
 };
 let CURRENT_MANIFEST = null;   // manifest.json
 let CURRENT_PASS = null;       // loaded chunk for STATE.passId
@@ -312,7 +313,9 @@ function currentPassSummary() { return passSummaries().find(p => p.id === STATE.
 
 // --- input cards (report.build_input_pass) ---
 const INPUT_MODES = ["ir", "src"];
-const GLOBAL_MODES = ["structure", "analyses"];
+const GLOBAL_MODES = ["structure", "analyses", "pipeline"];
+// Overviews are whole-report, so drilling into a pass must not return to them.
+const OVERVIEW_MODES = ["structure", "pipeline"];
 
 function isInputCard() {
   const summary = currentPassSummary();
@@ -499,6 +502,18 @@ function renderCtx() {
     const n = passSummaries().length;
     document.getElementById("ctx").innerHTML =
       `pipeline · <span class="fn">${n}</span> passes`;
+    return;
+  }
+  if (STATE.mode === "pipeline") {
+    const passes = passSummaries();
+    const onlyChanged = document.getElementById("changedOnly").checked;
+    const lanes = STATE.pipeBoth ? ["ir", "mir"] : [STATE.lane];
+    const stats = lanes.map(l => pipeCollapse(passes, l, onlyChanged).stats);
+    const nodes = stats.reduce((s, x) => s + x.nodes, 0);
+    const changed = stats.reduce((s, x) => s + x.changed, 0);
+    document.getElementById("ctx").innerHTML =
+      `flow · <span class="fn">${nodes}</span> nodes · `
+      + `<span class="fn">${changed}</span> changed · ${passes.length} passes`;
     return;
   }
   const s = currentPassSummary();
@@ -851,6 +866,7 @@ function renderMain() {
   const mode = effectiveMode();
   split.innerHTML =
     mode === "structure" ? pipelineTreeHtml()
+      : mode === "pipeline" ? pipePaneHtml()
       : mode === "cfg" ? cfgPaneHtml()
         : mode === "diff" ? diffPaneHtml()
           : mode === "src" ? srcPaneHtml()
@@ -862,6 +878,7 @@ function renderMain() {
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
+  mountPipeGraphs();
   updateViewHead();  // after the panes: it reads what they rendered
 }
 
@@ -1046,9 +1063,14 @@ const CFG_COLORS = {
 
 const CFG_FONT = { size: 10, charW: 6.0, lineH: 14, padX: 10, padY: 8, maxW: 300 };
 
-function labelBox(label, charW = CFG_FONT.charW) {
-  const { lineH, padX, padY, maxW } = CFG_FONT;
-  const maxChars = Math.max(1, Math.floor((maxW - 4) / charW));
+// How many characters one label line holds inside a box of this width.
+function labelChars(maxW, charW) {
+  return Math.max(1, Math.floor(((Number(maxW) || 0) - 4) / (Number(charW) || 1)));
+}
+
+function labelBox(label, charW = CFG_FONT.charW, maxW = CFG_FONT.maxW) {
+  const { lineH, padX, padY } = CFG_FONT;
+  const maxChars = labelChars(maxW, charW);
   const lines = String(label).split("\n");
   // Hard-wrap long lines so the rendered label matches the computed box.
   const wrapped = [];
@@ -1115,6 +1137,7 @@ function destroyCfgGraphs() {
   for (const cy of CFG_INSTANCES) cy.destroy();
   CFG_INSTANCES.clear();
   CFG_PENDING = [];
+  PIPE_PENDING = [];
 }
 
 function mountCfg(el, dot) {
@@ -1230,6 +1253,786 @@ function mountCfg(el, dot) {
   el._cy = cy;  // diagnostic hook
 }
 
+/* --- pipeline flow: collapsed pass chains, one serpentine ----------------- */
+
+// Mirrors :root in style.css. Cytoscape paints to a canvas and cannot read
+// custom properties, so these literals are the one place tokens are duplicated.
+const PIPE_COLORS = {
+  node: "#1b1f24",   // --panel2
+  agg: "#15181c",    // --panel
+  border: "#333a43", // --line-strong
+  soft: "#4a535f",   // muted rule
+  // A changed step is the content of this view, so it carries the brighter
+  // outline; an unchanged one is connective tissue and recedes.
+  nodeFg: "#232830",  // changed fill, lifted off the canvas
+  nodeBd: "#5a6675",  // changed outline
+  ghost: "#6b737e",   // unchanged text
+  ghostBd: "#3a424c", // unchanged outline
+  ghostFg: "#101317", // unchanged fill once its opacity composites over --well
+  ink: "#dfe4ea",    // --ink
+  dim: "#8b939e",    // --dim
+  faint: "#5d656f",  // --faint
+  trace: "#7aa2f7",  // --trace
+  entry: "#74c48a",  // --entry
+  warn: "#d9a441",   // --warn
+  del: "#e3767f",    // --del
+  add: "#74c48a",    // --add
+  custom: "#b28cf0", // --custom
+};
+
+// Two lines per box: what it is, then what it cost. Everything else lives in
+// the detail panel, which is what lets the type be readable.
+const PIPE_FONT = { size: 12, lineH: 16, padX: 11, padY: 10, maxW: 190, minW: 150 };
+const PIPE_CELL_H = 58;    // a pass cell: 2 label lines
+const PIPE_AGG_H = 58;     // collapsed-span header
+const PIPE_CHILD_H = 42;   // one inlined pass inside an expanded span
+const PIPE_COL_GAP = 40;
+const PIPE_LEGEND_TRACK = 44;   // how long a key bar is, filled to its share
+const PIPE_ROW_GAP = 46;
+const PIPE_MARGIN = 22;
+const PIPE_COLS = 5;          // cells per row, the target
+const PIPE_MIN_CELL_W = 150;  // below this a cell is too narrow to hold a label
+const PIPE_TAG_H = 20;
+const PIPE_MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
+
+let PIPE_PENDING = [];
+let PIPE_EXPANDED = new Set();   // collapsed-span keys, e.g. "ir:41-52"
+let PIPE_SELECTED = null;        // selected node key, kept across re-renders
+
+// -- collapse: one node per change, one node per run of non-changes --
+
+// Nodes carry added/removed flat; only a raw pass nests them under lineDelta.
+function pipeChurn(n) {
+  return ((n && n.added) || 0) + ((n && n.removed) || 0);
+}
+
+// A pass owns its own node when it changed something or is a custom pass.
+// isCustom must break a run: collapsing it would hide it from the view while
+// every other surface in the report still shows it.
+function pipeOwnNode(p) {
+  return !!(p.isInput || p.changed || p.isCustom);
+}
+
+function pipeSeq(passes, lane) {
+  return (passes || [])
+    .filter(p => p.lane === lane)
+    .sort((a, b) => a.runIndex - b.runIndex);
+}
+
+function pipeNodeFrom(p, kind) {
+  const a = p.analysisCounts || {};
+  return {
+    key: "p" + p.id, kind, summaryId: p.id, name: p.name, idx: p.runIndex,
+    lane: p.lane, timeMs: p.timeMs, added: (p.lineDelta || {}).added || 0,
+    removed: (p.lineDelta || {}).removed || 0,
+    spills: p.spillCount || 0, run: a.run || 0, invalidated: a.invalidated || 0,
+    custom: !!p.isCustom, isel: !!(p.iselFns && p.iselFns.length),
+    entry: !!p.isInput, changed: !!p.changed, ids: [p.id], count: 1,
+  };
+}
+
+function pipeCollapse(passes, lane, onlyChanged) {
+  const seq = pipeSeq(passes, lane);
+  const nodes = [];
+  let i = 0;
+  while (i < seq.length) {
+    if (pipeOwnNode(seq[i])) {
+      nodes.push(pipeNodeFrom(seq[i], "pass"));
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < seq.length && !pipeOwnNode(seq[j])) j++;
+    const run = seq.slice(i, j);
+    i = j;
+
+    if (run.length === 1) {
+      // A one-pass "span" would be a dead interaction — show it under its own
+      // name, dimmed, instead.
+      if (!onlyChanged) nodes.push(pipeNodeFrom(run[0], "noop"));
+      continue;
+    }
+    const times = run.map(p => p.timeMs).filter(v => v != null);
+    const head = run[0], tail = run[run.length - 1];
+    const sum = pick => run.reduce((s, p) => s + pick(p), 0);
+    nodes.push({
+      key: `a${lane}:${head.runIndex}-${tail.runIndex}`, kind: "agg",
+      summaryId: null, name: run.length + " unchanged", idx: head.runIndex,
+      lane, from: head.runIndex, to: tail.runIndex, count: run.length,
+      timeMs: times.length ? times.reduce((s, v) => s + v, 0) : null,
+      timedCount: times.length,
+      added: sum(p => (p.lineDelta || {}).added || 0),
+      removed: sum(p => (p.lineDelta || {}).removed || 0),
+      spills: sum(p => p.spillCount || 0),
+      run: sum(p => (p.analysisCounts || {}).run || 0),
+      invalidated: sum(p => (p.analysisCounts || {}).invalidated || 0),
+      custom: false, isel: false, entry: false, changed: false,
+      ids: run.map(p => p.id), children: run,
+      // "changed only" already means "spans are collapsed", so there is nothing
+      // to expand into there.
+      expandable: !onlyChanged,
+    });
+  }
+  return { nodes, stats: pipeStats(seq, nodes) };
+}
+
+function pipeStats(seq, nodes) {
+  const timed = seq.filter(p => p.timeMs != null);
+  const nonzero = timed.filter(p => p.timeMs > 0);
+  return {
+    passes: seq.length,
+    changed: seq.filter(p => p.changed || p.isCustom).length,
+    nodes: nodes.length,
+    aggregates: nodes.filter(n => n.kind === "agg").length,
+    collapsedPasses: nodes.reduce((s, n) => s + (n.kind === "agg" ? n.count : 0), 0),
+    laneTotalMs: timed.reduce((s, p) => s + p.timeMs, 0),
+    timedFraction: timed.length ? nonzero.length / timed.length : 1,
+  };
+}
+
+// -- layout: rows that alternate direction, wrapping under the previous tail --
+
+function pipeRowRule(rowLen, prevLastSlot) {
+  const startSlot = prevLastSlot == null ? 0 : prevLastSlot;
+  const step = (startSlot === 0 || rowLen - 1 > startSlot) ? 1 : -1;
+  return { startSlot, step };
+}
+
+// The pitch the grid repeats at: a full-width cell plus the gap after it.
+function pipeColStride() {
+  return PIPE_FONT.maxW + 2 * PIPE_FONT.padX + PIPE_COL_GAP;
+}
+
+// Cells are sized to the pane, so the target column count always fits. Pinning
+// five per row only works if the cells shrink to make room for the fifth; a
+// fixed cell width would push the row off the pane, reachable only by panning.
+function pipeGrid(clientW) {
+  const avail = Math.max(0, (clientW || 0) - 2 * PIPE_MARGIN);
+  const fit = n => Math.floor((avail - (n - 1) * PIPE_COL_GAP) / n);
+  let cols = PIPE_COLS;
+  let cellW = fit(cols);
+  // Too narrow for five readable cells: give up a column rather than shrink on.
+  while (cols > 3 && cellW < PIPE_MIN_CELL_W) cellW = fit(--cols);
+  cellW = Math.max(PIPE_MIN_CELL_W,
+    Math.min(cellW, PIPE_FONT.maxW + 2 * PIPE_FONT.padX));
+  return {
+    cols, cellW, stride: cellW + PIPE_COL_GAP,
+    // what the label may occupy inside the cell
+    maxW: cellW - 2 * PIPE_FONT.padX,
+    gap: PIPE_COL_GAP, floor: PIPE_MIN_CELL_W, target: PIPE_COLS,
+  };
+}
+
+// One cell per pipeline step; an expanded span stacks its members in place.
+function pipeCells(nodes, expanded) {
+  return nodes.map(n => {
+    if (n.kind === "agg" && n.expandable && expanded && expanded.has(n.key)) {
+      const items = [{ ...n, h: PIPE_AGG_H, head: true, expanded: true }];
+      for (const c of n.children) {
+        items.push({ ...pipeNodeFrom(c, "child"), h: PIPE_CHILD_H, child: true });
+      }
+      return { key: n.key, kind: n.kind, items, h: items.reduce((a, x) => a + x.h + 4, 0) };
+    }
+    return { key: n.key, kind: n.kind, items: [{ ...n, h: PIPE_CELL_H }], h: PIPE_CELL_H };
+  });
+}
+
+function pipeLayout(cells, opts) {
+  const cols = Math.max(1, opts.cols | 0);
+  const rows = [];
+  for (let i = 0; i < cells.length; i += cols) rows.push(cells.slice(i, i + cols));
+
+  const rowH = rows.map(r => Math.max(1, ...r.map(c => c.h)));
+  const rowDirs = [], tags = [], positions = {};
+  let y = PIPE_MARGIN, prevLast = null, maxSlot = 0, r = 0;
+  for (const row of rows) {
+    const { startSlot, step } = pipeRowRule(row.length, prevLast);
+    const tagY = y;
+    y += PIPE_TAG_H;
+    const top = y;
+    y += rowH[r] + PIPE_ROW_GAP;
+
+    let last = startSlot;
+    row.forEach((cell, c) => {
+      const slot = startSlot + c * step;
+      last = slot;
+      maxSlot = Math.max(maxSlot, slot);
+      const cx = PIPE_MARGIN + slot * opts.colStride + opts.colStride / 2;
+      let iy = top;
+      for (const item of cell.items) {
+        positions[item.key] = { x: cx, y: iy + item.h / 2 };
+        iy += item.h + 4;
+      }
+    });
+
+    const tagX = PIPE_MARGIN + startSlot * opts.colStride + opts.colStride / 2;
+    const tagKey = "t" + r;
+    // Tags live in the same position map so the preset layout covers them too.
+    positions[tagKey] = { x: tagX, y: tagY + PIPE_TAG_H / 2 };
+    const head = row[0], tail = row[row.length - 1];
+    tags.push({
+      key: tagKey, row: r, dir: step, x: tagX, y: tagY + PIPE_TAG_H / 2,
+      label: `${step > 0 ? "▸" : "◂"} ROW ${r + 1} · ${pipeIdx(head.items[0].idx)}–${pipeIdx(tail.items[0].idx)}`,
+    });
+    rowDirs.push(step);
+    prevLast = last;
+    r++;
+  }
+
+  const slots = Math.max(cols, maxSlot + 1);
+  // Cell indices after which the chain starts a new row; those edges wrap.
+  const wrapAfter = [];
+  let seen = 0;
+  for (let i = 0; i + 1 < rows.length; i++) {
+    seen += rows[i].length;
+    wrapAfter.push(seen - 1);
+  }
+  return {
+    positions, tags, rowDirs, rows: rows.map(x => x.length), rowH, wrapAfter,
+    width: PIPE_MARGIN * 2 + slots * opts.colStride,
+    height: Math.max(80, y - PIPE_ROW_GAP + PIPE_MARGIN),
+  };
+}
+
+// -- labels and elements --
+
+function pipeIdx(i) { return "#" + String(i == null ? 0 : i).padStart(3, "0"); }
+
+// A 0.00 is the 0.1 ms reporting floor, not a measurement, and a word would be
+// too long for a cell: the dash stands for both, and the note above says why.
+function pipeTime(v) {
+  return (v == null || v === 0) ? "—" : v.toFixed(2) + " ms";
+}
+
+// Names every mark the graph can draw. Built from the same tokens the styles
+// paint with, so the key cannot drift from the picture it describes.
+function pipeLegend() {
+  const c = PIPE_COLORS;
+  const box = (bd, bg, dashed) =>
+    `<i class="pl-sw" style="border-color:${bd};background-color:${bg};`
+    + (dashed ? "border-style:dashed" : "") + '"></i>';
+  const line = (col, dashed, w) =>
+    `<i class="pl-ln" style="border-top-color:${col};border-top-width:${w}px;`
+    + `border-top-style:${dashed ? "dashed" : "solid"}"></i>`;
+  // The track is the whole each bar is measured against, so the fill reads as a share.
+  const bar = segs => `<i class="pl-bar" style="background-color:${c.agg};`
+    + `width:${PIPE_LEGEND_TRACK}px">`
+    + segs.map(([col, w]) =>
+        `<s style="background-color:${col};width:${w}px"></s>`).join("") + "</i>";
+  const it = (mark, text) => `<span class="pl-it">${mark}<em>${text}</em></span>`;
+  const code = (s, text) => it(`<b>${s}</b>`, text);
+  return '<div class="pipe-legend">'
+    + it(box(c.nodeBd, c.nodeFg), "changed")
+    + it(box(c.ghostBd, c.nodeFg, 1), "unchanged")
+    + it(box(c.ghostBd, c.agg, 1), "collapsed span")
+    + it(box(c.ghostBd, c.agg), "span member")
+    + it(box(c.entry, c.nodeFg), "entry")
+    + it(box(c.custom, c.nodeFg), "custom")
+    + it(box(c.trace, c.nodeFg), "isel · selected")
+    + it(line(c.soft, 0, 1.3), "next pass")
+    + it(line(c.soft, 1, 1.6), "row break")
+    + it(line(c.trace, 1, 2.2), "opt → llc")
+    + it(bar([[c.del, 9], [c.add, 9]]), "lines removed / added")
+    + it(bar([[c.trace, 26]]), "share of time")
+    + code("#012", "run ordinal")
+    + code("+5 −2", "line churn")
+    + code("—", "below 0.1 ms")
+    + "</div>";
+}
+
+// Everything the box was too small to hold: the full metrics for the selected
+// node, and the only two actions the view has, as real buttons.
+function pipeDetailHtml(n) {
+  if (!n) return "";
+  const stats = [];
+  if (n.kind === "agg") {
+    stats.push([`${n.count} passes`, pipeIdx(n.from) + "–" + pipeIdx(n.to)]);
+    stats.push(["time", pipeTime(n.timeMs)]);
+    stats.push(["churn", pipeChurn(n) ? `+${n.added} −${n.removed}` : "none"]);
+  } else {
+    stats.push(["time", pipeTime(n.timeMs)]);
+    if (!n.entry) {
+      stats.push(["churn", pipeChurn(n) ? `+${n.added} −${n.removed}` : "none"]);
+    }
+  }
+  if (n.spills) stats.push(["spills", String(n.spills)]);
+  if (n.run || n.invalidated) stats.push(["analyses", `${n.run} run · ${n.invalidated} invalid`]);
+  if (n.custom) stats.push(["custom", "yes"]);
+  if (n.isel) stats.push(["isel", "selection pass"]);
+  if (n.entry) stats.push(["card", "pipeline entry"]);
+
+  const cells = stats.map(([k, v]) =>
+    `<span class="pm"><b>${escapeHtml(k)}</b>${escapeHtml(v)}</span>`).join("");
+
+  const acts = [];
+  // Only a span that was collapsed can be expanded; a filter already flattened
+  // the rest, and offering it there would be a dead button.
+  if (n.kind === "agg" && n.expandable) {
+    acts.push(`<button class="pipe-act" data-pipe-act="toggle" data-pipe-key="${n.key}">`
+      + `${n.expanded ? "▾ collapse" : "▸ expand"} (${n.count})</button>`);
+  }
+  if (n.summaryId != null) {
+    acts.push(`<button class="pipe-act" data-pipe-act="cfg" data-pipe-key="${n.key}">open CFG</button>`);
+    acts.push(`<button class="pipe-act" data-pipe-act="diff" data-pipe-key="${n.key}">open Diff</button>`);
+  }
+
+  const head = n.kind === "agg"
+    ? `${n.count} passes · unchanged`
+    : `${pipeIdx(n.idx)}  ${n.name}`;
+  // Members are numbered by runIndex, the same as the range in the header, so the
+  // two lines agree. Pass ids are global and would read as a different range.
+  const members = n.kind === "agg" && n.children && n.children.length
+    ? `<div class="pipe-members">holds `
+      + escapeHtml(n.children.map(c => pipeIdx(c.runIndex)).join(" ")) + `</div>`
+    : "";
+  return `<div class="pipe-detail-in">
+      <div class="pipe-detail-head">${escapeHtml(head)}</div>
+      <div class="pipe-detail-stats">${cells}</div>
+      ${members}
+      <div class="pipe-detail-acts">${acts.join("")}</div>
+    </div>`;
+}
+
+function pipeBadges(n) {
+  const b = [];
+  if (n.custom) b.push("custom");
+  if (n.isel) b.push("ISEL");
+  if (n.spills) b.push("⚠" + n.spills);
+  if (n.run || n.invalidated) b.push(`+${n.run} −${n.invalidated}`);
+  if (n.added || n.removed) b.push(`+${n.added} −${n.removed}`);
+  return b.join(" · ");
+}
+
+// A name that outruns the cell is clipped, never wrapped: a head spilling onto
+// line 2 would push the time line off the box and read as a pass with no time.
+function clipLine(s, maxChars) {
+  const t = String(s);
+  return t.length <= maxChars ? t : t.slice(0, Math.max(1, maxChars - 1)) + "…";
+}
+
+// Two lines only, the reading first, so it starts in the same place on every
+// box; churn or a one-word verdict follows it.
+function pipeNodeLabel(n, charW, maxLabelW) {
+  const head = n.kind === "agg"
+    ? `${pipeIdx(n.from)}–${pipeIdx(n.to)}  ${n.count} passes`
+    : `${pipeIdx(n.idx)}  ${n.name}`;
+  let tail;
+  if (n.kind === "agg") tail = "unchanged";
+  else if (n.entry) tail = "entry";
+  else if (n.kind === "noop") tail = "unchanged";
+  else tail = pipeChurn(n) > 0 ? `+${n.added} −${n.removed}` : "";
+  // Capped from the caller's own box width, so the label cannot wrap past the
+  // two lines a cell holds however narrow the pane gets.
+  const cap = labelChars(maxLabelW, charW);
+  const line2 = [pipeTime(n.timeMs), tail].filter(Boolean).join("  ");
+  // The time leads, so clipping a narrow box costs the churn, never the time.
+  return [clipLine(head, cap), clipLine(line2, cap)].join("\n");
+}
+
+function pipeBar(n, kind, ctx) {
+  const w = 120, h = 3;
+  let segs = [];
+  if (kind === "pass" && ctx.maxChurn > 0 && pipeChurn(n) > 0) {
+    const scale = w / ctx.maxChurn;
+    segs = [
+      { w: Math.max(1, Math.round(n.removed * scale)), c: PIPE_COLORS.del },
+      { w: Math.max(1, Math.round(n.added * scale)), c: PIPE_COLORS.add },
+    ];
+  } else if (kind === "agg" && n.timeMs && ctx.laneTotalMs > 0) {
+    segs = [{ w: Math.max(2, Math.round(n.timeMs / ctx.laneTotalMs * w)), c: PIPE_COLORS.trace }];
+  }
+  const used = segs.reduce((s, x) => s + x.w, 0);
+  const rects = segs.map((s, i) => {
+    const x = segs.slice(0, i).reduce((a, b) => a + b.w, 0);
+    return `<rect x="${x}" y="0" width="${s.w}" height="${h}" fill="${s.c}"/>`;
+  }).join("");
+  const width = Math.max(used, 1);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${rects}</svg>`;
+  return { bg: "data:image/svg+xml;utf8," + encodeURIComponent(svg), bw: used ? used + "px" : "0px" };
+}
+
+function pipeClassOf(n) {
+  const cls = [];
+  if (n.kind === "agg") cls.push("agg");
+  else if (n.kind === "noop") cls.push("noop");
+  else if (n.kind === "child") cls.push("childins");
+  else cls.push("pass");
+  if (n.entry) cls.push("entry");
+  if (n.custom) cls.push("custom");
+  if (n.isel) cls.push("isel");
+  return cls.join(" ");
+}
+
+function pipeGraphSpec(manifest, opts) {
+  const passes = (manifest && manifest.passes) || [];
+  const lanes = opts.lane === "both" ? ["ir", "mir"] : [opts.lane];
+  const expanded = opts.expanded || new Set();
+  // The pane decides how wide a cell may be; the default is the widest allowed.
+  const maxLabelW = opts.maxW || PIPE_FONT.maxW;
+
+  const parts = {};
+  for (const l of lanes) parts[l] = pipeCollapse(passes, l, opts.onlyChanged);
+  const all = [];
+  for (const l of lanes) all.push(...parts[l].nodes);
+
+  const laneTotalMs = lanes.reduce((s, l) => s + parts[l].stats.laneTotalMs, 0);
+  const maxChurn = Math.max(1, ...all.map(n => pipeChurn(n)));
+  const ctx = { laneTotalMs, maxChurn };
+
+  const cells = pipeCells(all, expanded);
+  const legend = pipeLayout(cells, opts);
+
+  // Element data, keyed the same way as the layout.
+  // `order` is the cell chain (what the edges follow); `itemKeys` is every
+  // element to mount. They differ once a span is expanded, whose children are
+  // mounted even though the chain still steps cell to cell.
+  const data = {}, classes = {}, order = [], itemKeys = [], raw = {};
+  cells.forEach(cell => {
+    for (const item of cell.items) {
+      const box = labelBox(pipeNodeLabel(item, opts.charW, maxLabelW),
+                           opts.charW, maxLabelW);
+      const bar = pipeBar(item, cell.kind, ctx);
+      // `raw` keeps the whole node for the detail panel; only `data` is lean
+      // enough to hand cytoscape.
+      raw[item.key] = item;
+      data[item.key] = {
+        id: item.key,
+        label: box.wrapped,
+        w: clampW(box.w, maxLabelW), h: item.h,
+        bg: bar.bg, bw: bar.bw,
+        kind: item.kind, summaryId: item.summaryId, aggKey: cell.key,
+        expandable: !!item.expandable, spills: item.spills,
+        custom: item.custom, lane: item.lane,
+      };
+      classes[item.key] = pipeClassOf(item);
+      itemKeys.push(item.key);
+    }
+    order.push(cell.key);
+  });
+
+  // The chain: one edge between consecutive steps. Where it crosses lanes it
+  // becomes the handoff, and where it crosses a row it is a wrap.
+  const wraps = new Set(legend.wrapAfter || []);
+  const edges = [];
+  for (let i = 0; i + 1 < cells.length; i++) {
+    const a = cells[i].items[cells[i].items.length - 1];
+    const b = cells[i + 1].items[0];
+    edges.push({
+      id: `e${a.key}-${b.key}`, source: a.key, target: b.key,
+      cls: a.lane !== b.lane ? "handoff" : (wraps.has(i) ? "wrap" : ""),
+    });
+  }
+
+  const stats = {
+    lanes,
+    passes: lanes.reduce((s, l) => s + parts[l].stats.passes, 0),
+    changed: lanes.reduce((s, l) => s + parts[l].stats.changed, 0),
+    nodes: all.length,
+    aggregates: lanes.reduce((s, l) => s + parts[l].stats.aggregates, 0),
+    timedFraction: Math.min(...lanes.map(l => parts[l].stats.timedFraction)),
+  };
+  return {
+    data, raw, classes, edges, order, itemKeys, tags: legend.tags,
+    positions: legend.positions,
+    width: legend.width, height: legend.height, rows: legend.rows,
+    wrapAfter: legend.wrapAfter, stats, laneTotalMs,
+  };
+}
+
+
+// The floor keeps a short label from collapsing to a sliver, but an explicit
+// ceiling always wins: a caller that says 120 must not get 150 back.
+function clampW(w, maxLabelW) {
+  const ceiling = (maxLabelW || PIPE_FONT.maxW) + 2 * PIPE_FONT.padX;
+  return Math.min(ceiling, Math.max(PIPE_FONT.minW, w));
+}
+
+// -- pane, mount, interaction --
+
+function pipeBodyHtml(idx, label) {
+  return `
+    <div class="pipe-cy" data-idx="${idx}">
+      <div class="pipe-cy-frame">
+        <span class="flabel">${escapeHtml(label)}</span>
+        <i class="cb tl" aria-hidden="true"></i><i class="cb tr" aria-hidden="true"></i>
+        <i class="cb bl" aria-hidden="true"></i><i class="cb br" aria-hidden="true"></i>
+        <div class="pipe-cy-canvas"></div>
+        <div class="pipe-cy-zoom">ZOOM ×1.00</div>
+      </div>
+      <div class="pipe-cy-detail"></div>
+    </div>`;
+}
+
+function pipePaneHtml() {
+  const manifest = CURRENT_MANIFEST || { passes: [] };
+  const passes = manifest.passes || [];
+  if (!passes.length) {
+    return pane("FLOW", "", "", '<div class="cfg-empty">(no passes captured)</div>');
+  }
+  const onlyChanged = document.getElementById("changedOnly").checked;
+  const lane = STATE.pipeBoth ? "both" : STATE.lane;
+
+  const shown = lane === "both" ? ["ir", "mir"] : [lane];
+  const stats = shown.map(l => pipeCollapse(passes, l, onlyChanged).stats);
+  const total = stats.reduce((s, x) => s + x.nodes, 0);
+  const changed = stats.reduce((s, x) => s + x.changed, 0);
+
+  const chips = `<span class="splt">
+      <button class="ptab${STATE.pipeBoth ? " active" : ""}" data-pipe="both">both</button>
+      <button class="ptab${STATE.pipeBoth ? "" : " active"}" data-pipe="lane">${STATE.lane === "ir" ? "IR" : "machine"}</button>
+    </span>`;
+
+  const stat = `${total} nodes · ${changed} changed`;
+
+  const idx = PIPE_PENDING.length;
+  PIPE_PENDING.push({ lane, onlyChanged });
+  const label = lane === "both" ? "pipeline · opt → llc" : `pipeline · ${lane === "ir" ? "opt" : "llc"}`;
+  return pane("FLOW", chips, stat,
+    `<div class="pipe-wrap">${pipeLegend()}${pipeBodyHtml(idx, label)}</div>`);
+}
+
+function mountPipeGraphs() {
+  document.querySelectorAll("#split .pipe-cy").forEach(el => {
+    mountPipe(el, PIPE_PENDING[+el.dataset.idx]);
+  });
+}
+
+function destroyPipeGraphs() {
+  PIPE_PENDING = [];
+}
+
+function mountPipe(el, desc) {
+  if (!desc) return;
+  const canvas = el.querySelector(".pipe-cy-canvas");
+  const detail = el.querySelector(".pipe-cy-detail");
+  if (!canvas) return;
+  if (typeof cytoscape !== "function") {
+    el.innerHTML = '<p class="cfg-empty">(graph library failed to load)</p>';
+    return;
+  }
+
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = `${PIPE_FONT.size}px ${PIPE_MONO}`;
+  const charW = Math.max(meas.measureText("M").width, 1);
+  // The grid follows the pane width, so collapsing the rail re-wraps.
+  const gridNow = () => pipeGrid(canvas.clientWidth);
+  const specFor = g => pipeGraphSpec(CURRENT_MANIFEST, {
+    lane: desc.lane, onlyChanged: desc.onlyChanged, cols: g.cols, charW,
+    colStride: g.stride, maxW: g.maxW, expanded: PIPE_EXPANDED,
+  });
+  const elementsFor = spec => {
+    const out = [];
+    // Every mounted element, not just the cell chain: an expanded span's
+    // children are edge endpoints too, and cytoscape rejects an edge whose
+    // endpoint was never added.
+    for (const key of spec.itemKeys || spec.order) {
+      const d = spec.data[key];
+      if (!d) continue;
+      const cls = spec.classes[key] + (dimmed(key, spec) ? " dim" : "")
+        + (key === PIPE_SELECTED ? " sel" : "");
+      out.push({ data: d, classes: cls });
+    }
+    for (const e of spec.edges) {
+      out.push({ data: { id: e.id, source: e.source, target: e.target }, classes: e.cls });
+    }
+    for (const t of spec.tags) {
+      out.push({ data: { id: t.key, label: t.label }, position: { x: t.x, y: t.y },
+        classes: "rowtag", selectable: false, locked: true });
+    }
+    return out;
+  };
+
+  const grid = gridNow();
+  const spec = specFor(grid);
+  if (!spec.order.length) {
+    el.innerHTML = '<p class="cfg-empty">(no passes match the current filter)</p>';
+    return;
+  }
+
+  const elements = elementsFor(spec);
+
+  // Same contract as the CFG graph: wheel zooms, dragging blank space pans.
+  const cy = cytoscape({
+    container: canvas,
+    elements,
+    minZoom: 0.1, maxZoom: 4,
+    boxSelectionEnabled: false,
+    autoungrabify: true,   // nodes stay where the layout put them
+    style: pipeStyle(),
+  });
+  // preset takes an id -> {x, y} map; the callback form receives a node, not a key.
+  const preset = s => cy.layout(
+    { name: "preset", fit: false, padding: 0, positions: s.positions }).run();
+
+  let mounted = { cellW: grid.cellW, spec };
+
+  // Open on the head of the pipeline at 1:1. Fitting the whole graph would
+  // shrink 12px labels past reading; zooming out to see the shape is the user's
+  // move to make.
+  const home = () => {
+    const bb = cy.elements().boundingBox();
+    const x = bb.w < cy.width() ? (cy.width() - bb.w) / 2 - bb.x1
+      : PIPE_MARGIN - bb.x1;
+    cy.zoom(1);
+    cy.pan({ x, y: PIPE_MARGIN - bb.y1 });
+  };
+  preset(spec);
+  home();
+
+  // Selecting is the view's only click. The two actions it offers are buttons
+  // in the detail panel, so no box behaves differently from any other.
+  const applySel = key => {
+    cy.nodes(".sel").removeClass("sel");
+    PIPE_SELECTED = null;
+    const item = key == null ? null : mounted.spec.raw[key];
+    const n = key == null ? null : cy.$id(key);
+    if (item && n && n.nonempty()) {
+      n.addClass("sel");
+      PIPE_SELECTED = key;
+    }
+    detail.innerHTML = item ? pipeDetailHtml(item) : "";
+  };
+
+  const relayout = () => {
+    cy.resize();  // the canvas is CSS-sized, so a resize needs nothing else
+    const g = gridNow();
+    if (g.cellW === mounted.cellW) return;
+    const next = specFor(g);
+    const z = cy.zoom(), pan = cy.pan();
+    mounted = { cellW: g.cellW, spec: next };
+    cy.json({ elements: elementsFor(next) });
+    preset(next);
+    cy.zoom(z);
+    cy.pan(pan);
+    applySel(PIPE_SELECTED);
+  };
+
+  cy.on("tap", "node", evt => {
+    if (evt.target.hasClass("rowtag")) return;
+    applySel(evt.target.id());
+  });
+  cy.on("tap", evt => { if (evt.target === cy) applySel(null); });
+
+  detail.addEventListener("click", evt => {
+    const b = evt.target.closest("[data-pipe-act]");
+    if (!b) return;
+    const item = mounted.spec.raw[b.dataset.pipeKey];
+    const act = b.dataset.pipeAct;
+    if (act === "toggle") { toggleAgg(item); return; }
+    if (!item || item.summaryId == null) return;
+    STATE.lastMode = act;
+    selectPassFromOverview(item.summaryId);
+  });
+
+  const zoomEl = el.querySelector(".pipe-cy-zoom");
+  if (zoomEl) {
+    const showZoom = () => { zoomEl.textContent = "ZOOM ×" + cy.zoom().toFixed(2); };
+    cy.on("zoom", showZoom);
+    showZoom();
+  }
+
+  applySel(PIPE_SELECTED);
+
+  cy._pipe = { get spec() { return mounted.spec; }, relayout };
+  CFG_INSTANCES.add(cy);
+  el._cy = cy;
+}
+
+// On a both-lane graph the rail's lane tab is a lens, not a filter.
+function dimmed(key, spec) {
+  const d = spec.data[key];
+  return !!(d && spec.stats.lanes.length > 1 && d.lane !== STATE.lane);
+}
+
+function toggleAgg(n) {
+  if (!n) return;
+  const key = n.key;
+  if (PIPE_EXPANDED.has(key)) PIPE_EXPANDED.delete(key);
+  else PIPE_EXPANDED.add(key);
+  renderMain();
+}
+
+function pipeStyle() {
+  const c = PIPE_COLORS;
+  return [
+    { selector: "node", style: {
+      "background-color": c.nodeFg,
+      "background-image": "data(bg)",
+      "background-fit": "none",
+      "background-width": "data(bw)",
+      "background-height": "3px",
+      "background-position-x": "0px",
+      "background-position-y": "100%",
+      "background-clip": "none",
+      "border-color": c.nodeBd,
+      "border-width": 1.5,
+      "shape": "round-rectangle",
+      "width": "data(w)",
+      "height": "data(h)",
+      "label": "data(label)",
+      "color": c.ink,
+      "font-family": PIPE_MONO,
+      "font-size": PIPE_FONT.size,
+      "text-wrap": "wrap",
+      "text-max-width": `${PIPE_FONT.maxW}px`,
+      "text-valign": "center",
+      "text-halign": "center",
+      "padding": "0px",
+      "text-outline-color": c.nodeFg,
+      "text-outline-width": 2,
+      "text-outline-opacity": 0.9,
+    }},
+    // A span measures time so its bar hangs right; a pass measures churn so its bar stays left.
+    { selector: "node.agg", style: {
+      "background-color": c.agg, "border-color": c.ghostBd,
+      "border-style": "dashed", "border-width": 1.5, "color": c.ghost,
+      "text-outline-color": c.agg, "background-position-x": "100%",
+    }},
+    { selector: "node.noop", style: {
+      "border-color": c.ghostBd, "border-style": "dashed", "color": c.ghost,
+      "background-opacity": 0.22, "text-outline-color": c.ghostFg,
+    }},
+    { selector: "node.childins", style: {
+      "background-color": c.agg, "border-color": c.ghostBd, "color": c.ghost,
+      "border-width": 1, "text-outline-color": c.agg,
+      "background-position-x": "100%",
+    }},
+    { selector: "node.entry", style: { "border-color": c.entry, "border-width": 2 } },
+    { selector: "node.custom", style: { "border-color": c.custom, "color": c.custom } },
+    { selector: "node.isel", style: { "border-color": c.trace, "border-width": 2 } },
+    { selector: "node.sel", style: { "border-color": c.trace, "border-width": 2 } },
+    { selector: "node.dim", style: { "opacity": 0.45 } },
+    { selector: "node.rowtag", style: {
+      "background-opacity": 0, "border-width": 0, "width": 1, "height": 1,
+      "label": "data(label)", "font-family": PIPE_MONO, "font-size": 9,
+      "color": c.faint, "text-halign": "left", "text-valign": "center",
+      "text-wrap": "none", "events": "no", "text-outline-width": 0,
+    }},
+    { selector: "edge", style: {
+      "width": 1.3, "line-color": c.soft, "target-arrow-color": c.soft,
+      "target-arrow-shape": "triangle", "arrow-scale": 0.9,
+      "curve-style": "bezier",
+    }},
+    { selector: "edge.handoff", style: {
+      "line-color": c.trace, "target-arrow-color": c.trace,
+      "width": 2.2, "line-style": "dashed", "opacity": 0.9,
+      "label": "opt → llc", "font-family": PIPE_MONO, "font-size": 9,
+      "color": c.trace, "text-background-color": "#0b0d10",
+      "text-background-opacity": 1, "text-background-padding": "2px",
+      "text-wrap": "none",
+    }},
+    // A wrap is the row's exit column hopping to the next row under it: a
+    // layout artifact, not a pipeline event, so it takes the ordinary edge
+    // colour and the trace blue is left to mean the lane handoff alone.
+    { selector: "edge.wrap", style: {
+      "curve-style": "taxi", "taxi-direction": "vertical",
+      "line-color": c.soft, "target-arrow-color": c.soft,
+      "line-style": "dashed", "width": 1.6, "opacity": 0.8,
+    }},
+    { selector: "edge.dim", style: { "opacity": 0.3 } },
+  ];
+}
+
 /* --- boot ---------------------------------------------------------------- */
 
 /* --- command sheet --------------------------------------------------------- */
@@ -1293,7 +2096,10 @@ function renderMeta(manifest) {
 }
 
 function resizeGraphs() {
-  for (const cy of CFG_INSTANCES) cy.resize();
+  for (const cy of CFG_INSTANCES) {
+    cy.resize();
+    if (cy._pipe) cy._pipe.relayout();  // the column count may have changed
+  }
 }
 
 async function boot() {
@@ -1345,7 +2151,7 @@ document.addEventListener("keydown", evt => {
 document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");
   if (!b || !modeAvailable(b.dataset.mode)) return;
-  if (b.dataset.mode !== "structure") STATE.lastMode = b.dataset.mode;
+  if (!OVERVIEW_MODES.includes(b.dataset.mode)) STATE.lastMode = b.dataset.mode;
   STATE.mode = b.dataset.mode;
   renderMain();
 });
@@ -1368,15 +2174,20 @@ document.getElementById("split").addEventListener("click", evt => {
   const analysis = evt.target.closest(".ptab[data-analysis]");
   if (analysis) { STATE.analysisType = analysis.dataset.analysis; renderMain(); return; }
 
+  // Flow: [both] [lane] chooses whether the other lane is dimmed or dropped.
+  const pipe = evt.target.closest(".ptab[data-pipe]");
+  if (pipe) { STATE.pipeBoth = pipe.dataset.pipe === "both"; renderMain(); return; }
+
   // Structure tree: a group header toggles collapse; a leaf drills into its pass.
+  const overview = STATE.mode === "structure" || STATE.mode === "pipeline";
   const head = evt.target.closest(".ptree-head");
-  if (head && STATE.mode === "structure") {
+  if (head && overview) {
     const group = head.closest(".ptree-group");
     group.classList.toggle("collapsed");
     return;
   }
   const leaf = evt.target.closest(".ptree-leaf[data-id]");
-  if (leaf && STATE.mode === "structure") {
+  if (leaf && overview) {
     selectPassFromOverview(+leaf.dataset.id);
     return;
   }
