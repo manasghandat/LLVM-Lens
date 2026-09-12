@@ -1287,7 +1287,7 @@ const PIPE_CELL_H = 58;    // a pass cell: 2 label lines
 const PIPE_AGG_H = 58;     // collapsed-span header
 const PIPE_CHILD_H = 42;   // one inlined pass inside an expanded span
 const PIPE_COL_GAP = 40;
-const PIPE_LEGEND_TRACK = 44;   // how long a key bar is, filled to its share
+const PIPE_LEGEND_TRACK = 26;   // how long a key bar is, filled to its share
 const PIPE_ROW_GAP = 46;
 const PIPE_MARGIN = 22;
 const PIPE_COLS = 5;          // cells per row, the target
@@ -1514,8 +1514,8 @@ function pipeLegend() {
   const line = (col, dashed, w) =>
     `<i class="pl-ln" style="border-top-color:${col};border-top-width:${w}px;`
     + `border-top-style:${dashed ? "dashed" : "solid"}"></i>`;
-  // The track is the whole each bar is measured against, so the fill reads as a share.
-  const bar = segs => `<i class="pl-bar" style="background-color:${c.agg};`
+  // The track wears the cell fill: in the key's own panel colour it draws nothing.
+  const bar = segs => `<i class="pl-bar" style="background-color:${c.nodeFg};`
     + `width:${PIPE_LEGEND_TRACK}px">`
     + segs.map(([col, w]) =>
         `<s style="background-color:${col};width:${w}px"></s>`).join("") + "</i>";
@@ -1532,8 +1532,8 @@ function pipeLegend() {
     + it(line(c.soft, 0, 1.3), "next pass")
     + it(line(c.soft, 1, 1.6), "row break")
     + it(line(c.trace, 1, 2.2), "opt → llc")
-    + it(bar([[c.del, 9], [c.add, 9]]), "lines removed / added")
-    + it(bar([[c.trace, 26]]), "share of time")
+    + it(bar([[c.del, 8], [c.add, 8]]), "lines removed / added")
+    + it(bar([[c.trace, 20]]), "share of time")
     + code("#012", "run ordinal")
     + code("+5 −2", "line churn")
     + code("—", "below 0.1 ms")
