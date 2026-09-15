@@ -14,6 +14,9 @@ behavior across IR and Machine IR.
   when the input carries debug info.
 - **Custom passes** — `--load-pass-plugin`, `--load`, and `--custom-pass` load
   plugins, force-dump them, and badge them in the report.
+- **Config file** — every flag, plus the per-tool extra arguments and the view
+  the report opens on, in a `llvm-lens.yml` found by walking up from the
+  working directory. See [Configuration](#configuration).
 - **Ask AI** (optional) — a chat panel in the report that answers questions
   about the selected pass or function, backed by your own Anthropic or
   OpenAI-compatible key. Off until you configure one.
@@ -61,6 +64,98 @@ llvm-lens sample.c --open
 ```
 
 Run `llvm-lens --help` for every option.
+
+### Configuration
+
+Anything you would otherwise repeat on the command line can live in a YAML
+file. Write a fully commented starter file showing every key at its default:
+
+```sh
+llvm-lens --init-config            # writes ./llvm-lens.yml
+llvm-lens --init-config ci/lens.yml
+```
+
+It never overwrites an existing file, so running it twice is safe. That file
+lists every key at its default; [`llvm-lens.sample.yml`](llvm-lens.sample.yml)
+in the repository root is the same list with a line of prose per key, and
+[`examples/mba-add/llvm-lens.yml`](examples/mba-add/llvm-lens.yml) is a
+filled-in one, configuring that example's plugin and custom pass — with it in
+place, running `llvm-lens demo.ll` from that directory needs no flags at all.
+
+Neither of those two is read on its own: only `llvm-lens.yml`, `llvm-lens.yaml`
+and `.llvm-lens.yml` are discovered, so a sample can be committed beside the
+code without changing how anything builds. Copy one, or name it explicitly
+with `--config`.
+
+`llvm-lens` looks for `llvm-lens.yml` (or `.yaml`, or `.llvm-lens.yml`) in the
+working directory and then in each parent, so a file committed beside the code
+it analyzes applies automatically. Failing that it reads
+`$XDG_CONFIG_HOME/llvm-lens/config.yml` (`~/.config/llvm-lens/config.yml` by
+default). Everything is optional — an unset key keeps the value shown in the
+template.
+
+```yaml
+output: report
+passes: 'default<O2>'
+custom-passes: [mba-add]
+
+llvm:
+  bin-dir: /usr/lib/llvm-22/bin
+  target: x86_64-unknown-linux-gnu
+
+plugins:
+  dir: build            # bare names below resolve against this
+  pass: [libMBAAdd.so]  # -load-pass-plugin (opt + llc)
+  legacy: []            # -load (llc backend only)
+
+flags:                  # extra arguments for each tool
+  clang: [-DVALUE=1]
+  opt: []
+  llc: ['-O3']
+
+ui:                     # what the report opens on
+  lane: ir              # ir | mir
+  mode: cfg             # cfg | diff | ir | src | isel | analyses | structure | pipeline
+  analysis: [pdt]       # pdt | cdg | ddg | pdg | mdg | lnt | cg, or all
+  orientation: side     # side | stack
+  split-ratio: 0.5
+  drawer: true
+  drawer-tab: Log
+  changed-only: false
+  flow-both-lanes: true
+```
+
+`analysis` is a list, so the report can open on several graphs at once, and the
+chips in the Graphs pane toggle independently. `all` is shorthand for the six
+per-function graphs; the call graph (`cg`) is module-wide, so it stays opt-in.
+Names are put back into the chip row's order whatever order they are written in.
+
+A flag always beats the file. The repeatable flags — `--load-pass-plugin`,
+`--load`, `--custom-pass`, and `--clang-arg` / `--opt-arg` / `--llc-arg` —
+*add* to what the file lists rather than replacing it, so a standing set of
+plugins can live in the config and a one-off can be appended at the call site.
+Those extra-argument flags need the `=` form for values starting with a dash:
+`--llc-arg=-O3`.
+
+Paths written in the config (`llvm.bin-dir`, `plugins.dir`, plugin entries) are
+relative to the file itself, so a committed config works from any directory.
+`output` is the exception — it stays relative to your shell.
+
+The file is chosen before the build starts, and it is named in the report's
+manifest, so a shared report says which settings produced it.
+
+Use `--config FILE` to name one explicitly, or `--no-config` to ignore every
+file and use the built-in defaults. A flag or file that cannot be used is
+reported and the build stops:
+
+```sh
+$ llvm-lens sample.c
+error: /home/me/proj/llvm-lens.yml: unknown setting 'passess'; did you mean passes?
+(`llvm-lens --init-config` writes the full list)
+```
+
+The settings file is not the same thing as `~/.llvm_lens_config`, which stores
+only the ask-AI credentials — see below.
 
 ### Examples
 

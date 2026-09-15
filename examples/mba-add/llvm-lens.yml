@@ -1,0 +1,21 @@
+# Settings for the MBAAdd example: only what differs from the defaults.
+#
+# LLVM-Lens finds this by walking up from the working directory, so from here
+# it is just `make && llvm-lens demo.ll --open`.  Every key there is, each at
+# its default, is written out in ../../llvm-lens.sample.yml.
+
+# Bare names resolve against this directory, so the plugin need not be on the
+# loader path.  `make` must have been run first.
+plugins:
+  dir: .
+  pass: [libMBAAdd.so]
+
+# Appended as function(mba-add), after the default<O2> module pipeline.
+custom-passes: [mba-add]
+
+# A report directory is meant to be shared: leave the AI credentials out.
+ai: false
+
+ui:
+  # The passes that changed nothing are noise; MBAAdd is what we came for.
+  changed-only: true

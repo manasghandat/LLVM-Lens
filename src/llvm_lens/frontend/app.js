@@ -293,7 +293,7 @@ let STATE = {
   mode: "diff",              // main view: "cfg" | "diff" | "ir" (not the lane)
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
-  analysisType: "pdt",       // analyses pane: pdt | cdg | ddg | pdg | mdg | lnt | cg
+  analysisTypes: ["pdt"],    // analyses pane: any of pdt | cdg | ddg | pdg | mdg | lnt | cg
   diffContext: "hunks",      // diff pane: "hunks" (3 lines) | "full" function
   srcFile: null,             // Source view: path of the file shown
   srcLine: null,             // Source view: correlated source line, or null
@@ -578,28 +578,45 @@ const ANALYSIS_LABELS = {
   pdt: "PDT", cdg: "CDG", ddg: "DDG", pdg: "PDG", mdg: "MDG", lnt: "LNT", cg: "Call graph",
 };
 
+// A manifest or a config may name graphs we do not know; keep the ones we do,
+// in the order the chips are drawn so the pane and the row never disagree.
+function analysisSelection(value) {
+  const wanted = Array.isArray(value) ? value : [value];
+  return ANALYSIS_TYPES.filter(t => wanted.includes(t));
+}
+
 function analysesPaneHtml() {
   const analyses = ((CURRENT_MANIFEST || {}).metadata || {}).analyses || {};
   const functions = analyses.functions || {};
   if (!analyses.callGraph && !Object.keys(functions).length) {
     return pane("Graphs", "", "", '<div class="cfg-empty">(no analyses for this module)</div>');
   }
-  if (!ANALYSIS_TYPES.includes(STATE.analysisType)) STATE.analysisType = "pdt";
+  STATE.analysisTypes = analysisSelection(STATE.analysisTypes);
+  const picked = STATE.analysisTypes;
   const chips = ANALYSIS_TYPES.map(t =>
-    `<button class="ptab ${t === STATE.analysisType ? "active" : ""}" data-analysis="${t}">${ANALYSIS_LABELS[t]}</button>`
+    `<button class="ptab ${picked.includes(t) ? "active" : ""}" data-analysis="${t}">${ANALYSIS_LABELS[t]}</button>`
   ).join("");
-  let dot, label;
-  if (STATE.analysisType === "cg") {
-    dot = analyses.callGraph;
-    label = "call graph";
-  } else {
-    const fnGraphs = functions[STATE.fn];
-    dot = fnGraphs && fnGraphs[STATE.analysisType];
-    label = ANALYSIS_LABELS[STATE.analysisType] + (STATE.fn ? ` · ${STATE.fn}` : "");
+  if (!picked.length) {
+    return pane("Graphs", chips, "final graphs only · not per-pass",
+      '<div class="cfg-empty">(no graph selected — click a name above)</div>');
   }
-  const body = dot
-    ? cfgBodyHtml(dot, label)
-    : `<div class="cfg-empty">(no ${ANALYSIS_LABELS[STATE.analysisType]}${STATE.analysisType !== "cg" && STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : ""})</div>`;
+  // One entry per selected graph; `cg` is the module-wide one, the rest are
+  // the selected function's.
+  const fnGraphs = functions[STATE.fn];
+  const bodies = picked.map(t => {
+    const dot = t === "cg" ? analyses.callGraph : (fnGraphs && fnGraphs[t]);
+    const label = t === "cg"
+      ? "call graph"
+      : ANALYSIS_LABELS[t] + (STATE.fn ? ` · ${STATE.fn}` : "");
+    return { dot, label, type: t };
+  });
+  // Nothing to draw at all reads as one message, not one per selected graph.
+  const body = bodies.every(b => !b.dot)
+    ? `<div class="cfg-empty">(no ${picked.map(t => ANALYSIS_LABELS[t]).join(", ")}`
+      + `${picked.includes("cg") ? "" : STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : ""})</div>`
+    : `<div class="graph-stack">${bodies.map(b => b.dot
+        ? cfgBodyHtml(b.dot, b.label)
+        : `<div class="cfg-empty">(no ${ANALYSIS_LABELS[b.type]})</div>`).join("")}</div>`;
   // The graphs are a fixed whole-report set; they don't step with the pass.
   return pane("Graphs", chips, "final graphs only · not per-pass", body);
 }
@@ -982,13 +999,18 @@ function bottomTabs() {
 
 function renderBottom() {
   const tabs = bottomTabs();
-  if (!tabs.some(t => t.tab === STATE.bottomTab)) STATE.bottomTab = "Log";
+  // Which tabs exist varies per pass, so a tab that is missing here is drawn
+  // over rather than forgotten: the choice has to survive the passes that
+  // cannot offer it (the input card offers almost none).
+  const wanted = STATE.bottomTab;
+  if (!tabs.some(t => t.tab === wanted)) STATE.bottomTab = "Log";
   document.getElementById("bottomTabs").innerHTML = tabs.map(t =>
     `<button class="vtab ${t.tab === STATE.bottomTab ? "active" : ""}" data-tab="${t.tab}">` +
     `${t.tab}${t.count ? `<span class="count">${t.count}</span>` : ""}</button>`).join("");
   document.getElementById("bottom").classList.toggle("open", STATE.bottomOpen);
   document.getElementById("bottomBody").innerHTML = STATE.bottomOpen ? bottomBodyHtml() : "";
   renderStrip(tabs);
+  STATE.bottomTab = wanted;
   document.querySelectorAll("#bottomTabs .vtab").forEach(b =>
     b.addEventListener("click", () => { STATE.bottomTab = b.dataset.tab; renderBottom(); }));
 }
@@ -2107,9 +2129,47 @@ function resizeGraphs() {
   }
 }
 
+/* The builder's `ui:` settings: what the report opens on. Every value is
+   checked against the same lists the controls use, so a report that was handed
+   a stale or hand-edited manifest still opens on something valid. */
+
+// manifest ui key -> the STATE field it fills, and what that field accepts.
+const UI_VALUES = {
+  lane: ["lane", ["ir", "mir"]],
+  mode: ["mode",
+    ["cfg", "diff", "ir", "src", "isel", "analyses", "structure", "pipeline"]],
+  orientation: ["orientation", ["side", "stack"]],
+};
+
+function applyUiSettings(manifest) {
+  const ui = (manifest.metadata || {}).ui;
+  if (!ui) return;
+  for (const [key, [field, allowed]] of Object.entries(UI_VALUES)) {
+    if (allowed.includes(ui[key])) STATE[field] = ui[key];
+  }
+  // A list, so it is not a membership test like the rest; ANALYSIS_TYPES is the
+  // one source of truth, so an unknown name is dropped rather than trusted.
+  if (ui.analysis !== undefined) {
+    const picked = analysisSelection(ui.analysis);
+    STATE.analysisTypes = picked.length ? picked : ["pdt"];
+  }
+  if (typeof ui.splitRatio === "number" && Number.isFinite(ui.splitRatio)) {
+    STATE.splitRatio = Math.min(0.85, Math.max(0.15, ui.splitRatio));
+  }
+  if (typeof ui.drawer === "boolean") STATE.bottomOpen = ui.drawer;
+  if (typeof ui.drawerTab === "string") STATE.bottomTab = ui.drawerTab;
+  if (typeof ui.flowBothLanes === "boolean") STATE.pipeBoth = ui.flowBothLanes;
+  if (typeof ui.changedOnly === "boolean") {
+    document.getElementById("changedOnly").checked = ui.changedOnly;
+  }
+  // An overview is whole-report; drilling back out of it lands on a detail view.
+  STATE.lastMode = OVERVIEW_MODES.includes(STATE.mode) ? "diff" : STATE.mode;
+}
+
 async function boot() {
   const manifest = await manifestPromise;
   CURRENT_MANIFEST = manifest;
+  applyUiSettings(manifest);
   renderMeta(manifest);
   renderCommands(manifest);
   renderLaneTabs();
@@ -2177,7 +2237,15 @@ document.getElementById("split").addEventListener("click", evt => {
   const file = evt.target.closest(".ptab[data-srcfile]");
   if (file) { STATE.srcFile = file.dataset.srcfile; renderMain(); return; }
   const analysis = evt.target.closest(".ptab[data-analysis]");
-  if (analysis) { STATE.analysisType = analysis.dataset.analysis; renderMain(); return; }
+  if (analysis) {
+    const t = analysis.dataset.analysis;
+    // A toggle, not a selection: graphs are meant to be read side by side.
+    STATE.analysisTypes = STATE.analysisTypes.includes(t)
+      ? STATE.analysisTypes.filter(x => x !== t)
+      : ANALYSIS_TYPES.filter(x => x === t || STATE.analysisTypes.includes(x));
+    renderMain();
+    return;
+  }
 
   // Flow: [both] [lane] chooses whether the other lane is dimmed or dropped.
   const pipe = evt.target.closest(".ptab[data-pipe]");

@@ -136,10 +136,12 @@ def harvest_mir_table(
     toolchain: Toolchain,
     load: tuple[str, ...] = (),
     timeout: float | None = None,
+    extra_args: tuple[str, ...] = (),
 ) -> DebugTable:
     """Harvest the backend's metadata table from a stop-after MIR dump."""
     cmd = [str(toolchain.llc.path), f"-stop-after={MIR_STOP_AFTER}", "-o", "-"]
     cmd.extend(f"-load={plugin}" for plugin in load)
+    cmd.extend(extra_args)
     cmd.append(str(input_ir))
     try:
         result = run_capture(cmd, timeout)

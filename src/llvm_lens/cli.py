@@ -14,7 +14,17 @@ from .config import (
     DEFAULT_BASE_URLS, DEFAULT_MODELS, PROVIDERS, ConfigError, config_path,
     load_config, save_config,
 )
-from .report import DEFAULT_PASSES, build_report
+from .report import build_report
+from .settings import (
+    DEFAULT_PASSES, SETTINGS_ENV, PROJECT_FILENAMES, Settings, SettingsError,
+    load_settings, write_template,
+)
+
+DEFAULT_CONFIG_NAME = PROJECT_FILENAMES[0]
+
+# LLVM's own flags all start with a dash, which argparse would read as the
+# next option; joining them with "=" is what survives that.
+_DASH_NOTE = "Write --opt-arg=-foo when the argument starts with '-'."
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,16 +33,41 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Analyze LLVM pass pipelines and emit a static HTML report. "
             "Accepts .c/.cpp (compiled with clang), .ll, and .bc sources. "
-            "Lane A runs the opt middle-end pipeline; Lane B runs the llc backend."
+            "Lane A runs the opt middle-end pipeline; Lane B runs the llc backend. "
+            "Settings come from the nearest " + DEFAULT_CONFIG_NAME + ", then "
+            f"{SETTINGS_ENV}; every flag below overrides them, and "
+            "`llvm-lens --init-config` writes a starter file."
+        ),
+        epilog=(
+            "Repeatable flags (--load-pass-plugin, --custom-pass, and the "
+            "--*-arg flags) add to whatever the config file already lists, "
+            "rather than replacing it."
         ),
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}",
     )
-    parser.add_argument("source", help="Source file to analyze (.c/.cpp/.ll/.bc).")
     parser.add_argument(
-        "--passes", default=DEFAULT_PASSES,
-        help="New-PM pipeline string for opt (Lane A).  [default: %(default)s]",
+        "source", nargs="?", help="Source file to analyze (.c/.cpp/.ll/.bc).",
+    )
+    parser.add_argument(
+        "--config", metavar="FILE", default=None,
+        help=f"Settings file to use, instead of searching for {DEFAULT_CONFIG_NAME}. "
+             "See `--init-config` for the keys.",
+    )
+    parser.add_argument(
+        "--no-config", dest="no_config", action="store_true",
+        help="Ignore every settings file and use the built-in defaults.",
+    )
+    parser.add_argument(
+        "--init-config", nargs="?", const=DEFAULT_CONFIG_NAME, default=None,
+        metavar="FILE",
+        help=f"Write a commented starter settings file (default: "
+             f"{DEFAULT_CONFIG_NAME}) and exit. Never overwrites.",
+    )
+    parser.add_argument(
+        "--passes", default=None,
+        help=f"New-PM pipeline string for opt (Lane A).  [default: {DEFAULT_PASSES}]",
     )
     parser.add_argument(
         "--load-pass-plugin", dest="load_pass_plugins", action="append",
@@ -50,8 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
              "and badge (repeatable).",
     )
     parser.add_argument(
-        "-o", "--output", default="report",
-        help="Directory to write the report into.  [default: %(default)s]",
+        "-o", "--output", default=None,
+        help="Directory to write the report into.  [default: report]",
     )
     parser.add_argument(
         "--bin-dir", default=None,
@@ -63,25 +98,73 @@ def build_parser() -> argparse.ArgumentParser:
              "Defaults to LLVM_LENS_LLVM_MAJOR, else 22.",
     )
     parser.add_argument(
+        "--target", default=None, metavar="TRIPLE",
+        help="Target triple, passed to clang as --target and to llc as "
+             "-mtriple.  Defaults to the host.",
+    )
+    parser.add_argument(
         "--timeout", type=float, default=None, metavar="SECONDS",
         help="Per-tool invocation timeout. Off by default: a big module under "
              "default<O2> is slow rather than hung.",
     )
     parser.add_argument(
-        "--no-source-map", dest="source_map", action="store_false", default=True,
+        "--source-map", action=argparse.BooleanOptionalAction, default=None,
         help="Correlate IR/MIR lines with the original source (needs debug "
-             "info; costs one extra llc run).  [default: on]",
+             "info; costs one extra llc run).",
     )
     parser.add_argument(
-        "--open", dest="open_report", action="store_true",
+        "--open", dest="open_report", action="store_true", default=None,
         help="Open the report in the default browser once it is written.",
     )
     parser.add_argument(
-        "--no-ai", dest="ai", action="store_false", default=True,
-        help="Do not copy the stored AI credentials (see configure-ai) into "
-             "the report.  Use this before sharing a report directory.",
+        "--ai", action=argparse.BooleanOptionalAction, default=None,
+        help="Copy the stored AI credentials (see configure-ai) into the "
+             "report.  Use --no-ai before sharing a report directory.",
+    )
+    parser.add_argument(
+        "--clang-arg", dest="clang_args", action="append", default=[], metavar="ARG",
+        help=f"Extra argument for the clang invocation (repeatable). {_DASH_NOTE}",
+    )
+    parser.add_argument(
+        "--opt-arg", dest="opt_args", action="append", default=[], metavar="ARG",
+        help=f"Extra argument for the opt invocation (repeatable). {_DASH_NOTE}",
+    )
+    parser.add_argument(
+        "--llc-arg", dest="llc_args", action="append", default=[], metavar="ARG",
+        help=f"Extra argument for the llc invocation (repeatable). {_DASH_NOTE}",
     )
     return parser
+
+
+def read_settings(args: argparse.Namespace) -> Settings:
+    """The config file's settings. Raise SystemExit on a file we cannot use."""
+    if args.no_config:
+        return Settings()
+    try:
+        return load_settings(args.config)
+    except SettingsError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+
+def apply_flags(settings: Settings, args: argparse.Namespace) -> Settings:
+    """Flags win over the file; the repeatable ones add to it."""
+    return settings.overridden(
+        passes=args.passes,
+        output=args.output,
+        bin_dir=args.bin_dir,
+        llvm_version=args.llvm_version,
+        target=args.target,
+        timeout=args.timeout,
+        source_map=args.source_map,
+        open_report=args.open_report,
+        ai=args.ai,
+        custom_passes=settings.custom_passes + tuple(args.custom_passes),
+        pass_plugins=settings.pass_plugins + tuple(args.load_pass_plugins),
+        legacy_plugins=settings.legacy_plugins + tuple(args.load),
+        clang_args=settings.clang_args + tuple(args.clang_args),
+        opt_args=settings.opt_args + tuple(args.opt_args),
+        llc_args=settings.llc_args + tuple(args.llc_args),
+    )
 
 
 def build_configure_parser() -> argparse.ArgumentParser:
@@ -221,6 +304,16 @@ def run_configure_ai(argv: Sequence[str]) -> int:
     return 0
 
 
+def run_init_config(path: str) -> int:
+    try:
+        written = write_template(path)
+    except SettingsError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+    print(f"wrote {written}")
+    print("every key is optional and shown at its default; flags still win over it")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     words = list(sys.argv[1:] if argv is None else argv)
     if words and words[0] in ("configure-ai", "--configure-ai"):
@@ -229,23 +322,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(words)
 
+    if args.init_config is not None:
+        return run_init_config(args.init_config)
+    if args.config and args.no_config:
+        parser.error("--config and --no-config are mutually exclusive")
+    if args.source is None:
+        parser.error("the following arguments are required: source")
+
     source = Path(args.source)
     if not source.is_file():
         parser.error(f"argument source: {args.source!r} is not an existing file")
 
+    settings = apply_flags(read_settings(args), args)
+    if settings.config_file:
+        print(f"config:     {settings.config_file}")
+
     try:
         summary = build_report(
             source,
-            passes=args.passes,
-            load_pass_plugins=tuple(args.load_pass_plugins),
-            load=tuple(args.load),
-            custom_passes=tuple(args.custom_passes),
-            output=args.output,
-            bin_dir=args.bin_dir,
-            llvm_version=args.llvm_version,
-            timeout=args.timeout,
-            source_map=args.source_map,
-            ai_config=load_config() if args.ai else {},
+            passes=settings.passes,
+            load_pass_plugins=settings.pass_plugins,
+            load=settings.legacy_plugins,
+            custom_passes=settings.custom_passes,
+            output=settings.output,
+            bin_dir=settings.bin_dir,
+            llvm_version=settings.llvm_version,
+            target=settings.target,
+            timeout=settings.timeout,
+            source_map=settings.source_map,
+            ai_config=load_config() if settings.ai else {},
+            clang_args=settings.clang_args,
+            opt_args=settings.opt_args,
+            llc_args=settings.llc_args,
+            ui=settings.ui,
+            config_file=settings.config_file,
         )
     except Exception as exc:
         raise SystemExit(f"error: {exc}") from exc
@@ -261,7 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("warning: opt failed/timed out; report is partial", file=sys.stderr)
     if summary["llcCrashed"]:
         print("warning: llc failed/timed out; report is partial", file=sys.stderr)
-    if args.open_report:
+    if settings.open_report:
         webbrowser.open((Path(summary["reportDir"]) / "index.html").as_uri())
     return 0
 

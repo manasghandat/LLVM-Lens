@@ -26,6 +26,7 @@ from .parsers.print_changed import (
 from .parsers.time_passes import parse_time_passes
 from .runner_llc import LlcResult, run_llc
 from .runner_opt import OptResult, run_opt
+from .settings import DEFAULT_PASSES, Ui
 from .sourcemap import (
     MIR_REF_RE, DebugTable, LineMap, encode, harvest_mir_table, has_debug_info,
     map_lines, parse_debug_table, read_sources,
@@ -35,7 +36,7 @@ from .toolchain import Toolchain, discover_toolchain
 IR_DUMP_HEADER_RE = re.compile(r"^\*\*\* IR Dump After ")
 MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After ")
 
-DEFAULT_PASSES = "default<O2>"
+__all__ = ["DEFAULT_PASSES", "build_report", "build_lane_a", "build_lane_b"]
 
 INPUT_PASS_NAME = "Input IR"
 BACKEND_INPUT_PASS_NAME = "Optimized IR"
@@ -599,6 +600,12 @@ def build_report(
     timeout: float | None = None,
     source_map: bool = True,
     ai_config: dict[str, Any] | None = None,
+    clang_args: tuple[str, ...] = (),
+    opt_args: tuple[str, ...] = (),
+    llc_args: tuple[str, ...] = (),
+    target: str | None = None,
+    ui: Ui | None = None,
+    config_file: str | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and emit the report. Returns a summary dict."""
     out = Path(output)
@@ -609,14 +616,24 @@ def build_report(
     toolchain: Toolchain = discover_toolchain(bin_dir, llvm_version)
 
     effective_passes = _effective_pipeline(passes, custom_passes)
+    # The triple reaches every stage, or the lanes would disagree about the
+    # target. clang's driver spells it -target <triple>; the GCC-style
+    # "--target <triple>" is rejected outright. Cross-compiling still needs a
+    # sysroot for that triple, which is the user's to provide.
+    clang_extra = (*clang_args, *(("-target", target) if target else ()))
+    llc_extra = (*llc_args, *(("-mtriple", target) if target else ()))
 
     started = time.perf_counter()
-    compiled = compile_to_ir(source, toolchain=toolchain, out_dir=raw, timeout=timeout)
+    compiled = compile_to_ir(
+        source, toolchain=toolchain, out_dir=raw, timeout=timeout,
+        extra_args=clang_extra,
+    )
     opt_result = run_opt(
         toolchain, compiled.ir_path, effective_passes,
         out_dir=raw,
         load_pass_plugins=load_pass_plugins,
         print_after=custom_passes,
+        extra_args=opt_args,
         timeout=timeout,
     )
     opt_stderr = opt_result.stderr_path.read_text(errors="replace")
@@ -645,7 +662,7 @@ def build_report(
         llc_result = run_llc(
             opt_result.ir_path, out_dir=raw,
             load_pass_plugins=load_pass_plugins, load=load,
-            print_after=custom_passes,
+            print_after=custom_passes, extra_args=llc_extra,
             timeout=timeout, toolchain=toolchain,
         )
         if not llc_result.timed_out:
@@ -653,7 +670,7 @@ def build_report(
             asm_text = llc_result.asm_path.read_text(errors="replace") if llc_result.asm_path else None
             mir_table = harvest_mir_table(
                 opt_result.ir_path, toolchain=toolchain,
-                load=load, timeout=timeout,
+                load=load, timeout=timeout, extra_args=llc_extra,
             ) if source_map else None
             lane_b_passes, mir_nodes, pass_arguments = build_lane_b(
                 llc_stderr, asm_text, custom_passes, mir_table,
@@ -689,6 +706,9 @@ def build_report(
         "pipeline": effective_passes,
         "plugins": list(load_pass_plugins) + list(load),
         "customPasses": list(custom_passes),
+        "mtriple": target,
+        "configFile": config_file,
+        "ui": (ui or Ui()).as_metadata(),
         "commands": build_commands(compiled, opt_result, llc_result),
         "toolVersions": {name: tool.version for name, tool in toolchain.tools.items()},
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),

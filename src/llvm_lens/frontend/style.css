@@ -288,6 +288,13 @@ body.rail-collapsed .rail-edge { display: none; }
 .pane-body { flex: 1; position: relative; min-height: 0; display: flex;
   flex-direction: column; }
 
+/* Graphs view with several analyses picked: scrolls rather than clipping, and
+   each keeps a readable floor instead of splitting the pane N ways. */
+.graph-stack { flex: 1; display: flex; flex-direction: column; gap: 5px;
+  min-height: 0; overflow-y: auto; }
+.graph-stack > .cfg-cy { flex: none; min-height: 240px; }
+.graph-stack > .cfg-cy:only-child { flex: 1; min-height: 0; }
+
 /* --- CFG pane: the specimen under the lens -------------------------------- */
 
 .cfg-cy { flex: 1; display: flex; flex-direction: column; min-height: 0;

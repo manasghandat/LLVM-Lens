@@ -1,0 +1,52 @@
+# Every LLVM-Lens setting, each at the value you already get without it.
+#
+# Nothing reads this file: LLVM-Lens looks for llvm-lens.yml, llvm-lens.yaml or
+# .llvm-lens.yml, and this is none of those.  Copy it to llvm-lens.yml beside
+# the code being analyzed (it is found by walking up from the working
+# directory), or pass `llvm-lens --config llvm-lens.sample.yml`.  Delete what
+# you do not need: an absent key keeps the value shown, and a command-line flag
+# always beats the file.  `llvm-lens --init-config` writes the same key list.
+
+# --- the build -----------------------------------------------------------------
+
+output: report           # where to write the report, relative to your shell
+passes: 'default<O2>'    # the new-PM pipeline opt runs (Lane A)
+custom-passes: []        # function-pass names to append and badge, e.g. [mba-add]
+source-map: true         # map IR/MIR lines back to the source (needs debug info)
+open: false              # open the report in a browser once it is written
+ai: true                 # copy the ask-AI credentials in; false before sharing
+timeout: null            # per-tool seconds; null means no limit
+
+# --- which LLVM ----------------------------------------------------------------
+
+llvm:
+  bin-dir: null          # directory holding the tools, instead of PATH
+  version: null          # expected major version
+  target: null           # triple, passed to clang -target and llc -mtriple
+
+# --- plugins -------------------------------------------------------------------
+
+plugins:
+  dir: null              # bare names below resolve here, else beside this file
+  pass: []               # new-PM pass plugins, loaded by opt and llc
+  legacy: []             # legacy pass plugins, loaded by llc's backend only
+
+# --- extra tool arguments ------------------------------------------------------
+
+flags:                   # appended as written; the flags add to these
+  clang: []
+  opt: []
+  llc: []
+
+# --- what the report opens on --------------------------------------------------
+
+ui:
+  lane: ir               # ir | mir
+  mode: diff             # cfg | diff | ir | src | isel | analyses | structure | pipeline
+  analysis: [pdt]        # pdt | cdg | ddg | pdg | mdg | lnt | cg, or all (the six per-function)
+  orientation: side      # side | stack
+  split-ratio: 0.5       # first pane's share of the split, 0.15-0.85
+  drawer: true           # the detail drawer starts open
+  drawer-tab: Log        # drawer tab to open on load
+  changed-only: false    # start filtered to the passes that changed something
+  flow-both-lanes: true  # flow view draws both lanes, or only the selected one

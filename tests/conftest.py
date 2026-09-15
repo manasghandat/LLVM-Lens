@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from llvm_lens import config as config_mod
+from llvm_lens import settings as settings_mod
 from llvm_lens.compile import compile_to_ir
 from llvm_lens.toolchain import ToolchainError, discover_toolchain
 
@@ -18,6 +19,18 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def no_real_ai_config(tmp_path, monkeypatch):
     """Keep every test off the developer's own ~/.llvm_lens_config."""
     monkeypatch.setenv(config_mod.CONFIG_ENV, str(tmp_path / "no-such-config"))
+
+
+@pytest.fixture(autouse=True)
+def no_real_settings(tmp_path, monkeypatch):
+    """...and off any llvm-lens.yml in their tree, or their user config.
+
+    An empty file rather than a missing one: a named-but-absent path is an
+    error, while an empty file is exactly "nothing is configured".
+    """
+    empty = tmp_path / "no-settings.yml"
+    empty.write_text("")
+    monkeypatch.setenv(settings_mod.SETTINGS_ENV, str(empty))
 
 # Common apt.llvm.org locations, newest first, used when PATH discovery fails.
 _BIN_DIR_CANDIDATES = [
