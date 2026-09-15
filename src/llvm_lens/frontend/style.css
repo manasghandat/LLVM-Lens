@@ -342,7 +342,7 @@ body.rail-collapsed .rail-edge { display: none; }
   border: 1px solid var(--line); border-radius: var(--r);
   font-size: 12px; line-height: 1.5; padding-bottom: 6px;
   /* gutter geometry; the sticky offsets below are derived from these */
-  --uln-w: 42px; --umark-w: 16px; }
+  --uln-w: 42px; --umark-w: 16px; --ublame-w: 36px; }
 
 .ubody { width: max-content; min-width: 100%; }
 
@@ -430,6 +430,57 @@ body.rail-collapsed .rail-edge { display: none; }
 .urow.vref .uln { background: linear-gradient(rgba(143, 214, 164, 0.18),
   rgba(143, 214, 164, 0.18)), var(--panel2); }
 .cmapside .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+
+/* --- Blame view: which pass last wrote each line --------------------------- */
+
+/* The run that last wrote a line, tinted so equal runs read as one band. */
+.ublame { --bt: 110, 118, 132; flex: none; width: var(--ublame-w); padding: 0 6px;
+  text-align: right; font-variant-numeric: tabular-nums; user-select: none;
+  position: sticky; left: var(--uln-w); z-index: 1; color: rgb(var(--bt));
+  background: linear-gradient(rgba(var(--bt), 0.18), rgba(var(--bt), 0.18))
+    var(--panel2); }
+.btin { --bt: 110, 118, 132; }
+.bt0 { --bt: 122, 162, 247; }
+.bt1 { --bt: 178, 140, 240; }
+.bt2 { --bt: 122, 205, 220; }
+.bt3 { --bt: 140, 155, 205; }
+.bt4 { --bt: 200, 150, 220; }
+.bt5 { --bt: 100, 180, 210; }
+.bt6 { --bt: 155, 145, 230; }
+.bt7 { --bt: 170, 175, 200; }
+
+.urow.bline, .urow[data-side] { cursor: pointer; }
+.urow.bline:hover, .urow[data-side]:hover { background: var(--panel); }
+.urow.hit .ublame { background: linear-gradient(rgba(122, 162, 247, 0.22),
+  rgba(122, 162, 247, 0.22)) var(--panel2); }
+
+/* The chain behind one line: every pass that touched it, oldest first. */
+.bdetail { flex: none; margin: 0 10px 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r); font-size: 11px; }
+.bdetail.bwait { padding: 8px 10px; margin-top: -4px; color: var(--dim); }
+.bdetail-head { display: flex; align-items: baseline; gap: 10px; padding: 6px 8px;
+  border-bottom: 1px solid var(--line); }
+.btitle { flex: none; font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--trace); }
+.bdetail-code { flex: 1; min-width: 0; white-space: pre; overflow: hidden;
+  text-overflow: ellipsis; }
+.bclose { flex: none; cursor: pointer; color: var(--faint); padding: 0 2px; }
+.bclose:hover { color: var(--ink); }
+.bchain { max-height: 138px; overflow: auto; }
+.brow { display: flex; align-items: baseline; gap: 10px; padding: 3px 8px;
+  cursor: pointer; }
+.brow:hover { background: var(--panel2); }
+.brow.bnone { cursor: default; color: var(--dim); }
+.brow.bnone:hover { background: none; }
+.brun { flex: none; width: 34px; text-align: right; color: var(--faint);
+  font-variant-numeric: tabular-nums; }
+.bname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.bkind { flex: none; font-size: 9px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--dim); }
+.bkind.created { color: var(--add); }
+.bkind.rewritten { color: var(--trace); }
+.bkind.renamed { color: var(--faint); }
 
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
 

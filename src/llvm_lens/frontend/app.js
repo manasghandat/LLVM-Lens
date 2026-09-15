@@ -161,7 +161,8 @@ function unifiedDiffHtml(hunks) {
     const rows = hunk.rows.map(row => {
       const cls = row.op === "+" ? "add" : row.op === "-" ? "del" : "uctx";
       const body = highlightIR(row.text);
-      return `<div class="urow ${cls}">`
+      return `<div class="urow ${cls}" data-a="${row.a || ""}"`
+        + ` data-b="${row.b || ""}" data-side="${row.op === " " ? "+" : row.op}">`
         + `<span class="uln">${row.a || ""}</span>`
         + `<span class="uln">${row.b || ""}</span>`
         + `<span class="umark">${row.op === " " ? "&nbsp;" : row.op}</span>`
@@ -177,11 +178,214 @@ function unifiedDiffHtml(hunks) {
 function irSideHtml(ops, mark) {
   return ops.filter(o => o.op === " " || o.op === mark).map(o => {
     const cls = o.op === " " ? "uctx" : (mark === "+" ? "add" : "del");
-    return `<div class="urow ${cls}">`
+    return `<div class="urow ${cls}" data-a="${o.a || ""}"`
+      + ` data-b="${o.b || ""}" data-side="${mark}">`
       + `<span class="uln">${mark === "+" ? o.b : o.a}</span>`
       + `<code class="utext">${highlightIR(o.text) || "&nbsp;"}</code>`
       + "</div>";
   }).join("");
+}
+
+/* --- blame: which pass put each line of IR here ---------------------------- */
+
+const BLAME_TINTS = 8;   // distinct gutter tints before they start repeating
+
+// One lane's lineage document: pass names, writes and per-line chains, interned.
+const blameDocs = new Map();   // lane -> Promise<doc|null>
+
+function loadBlame(lane) {
+  if (!blameDocs.has(lane)) {
+    blameDocs.set(lane, loadJSON(`blame-${lane}`).catch(() => null));
+  }
+  return blameDocs.get(lane);
+}
+
+// A stored chain id -> the writes behind it, oldest first.
+function blameChain(doc, id) {
+  return (doc.hist[id] || []).map(e => {
+    const [run, name, kind] = doc.events[e];
+    return { run, name: doc.names[name], kind: doc.kinds[kind] };
+  });
+}
+
+// lane -> Map(run -> card id), so a chain row can jump to its pass.
+const blameIds = new Map();
+
+async function blameIdsFor(lane) {
+  if (!blameIds.has(lane)) {
+    const manifest = await manifestPromise;
+    blameIds.set(lane, new Map(manifest.passes
+      .filter(p => p.lane === lane && !p.isInput)
+      .map(p => [p.runIndex, p.id])));
+  }
+  return blameIds.get(lane);
+}
+
+// The lineage of one function: a state per run that changed it, oldest first,
+// each with its per-line chains. Only the last state ships its text; a row on
+// screen lends the text to any earlier one.
+function blameWalkFor(doc, fn) {
+  const entry = doc && doc.functions ? doc.functions[fn] : null;
+  if (!entry || !entry.states.length) return null;
+  const runs = entry.states.map(s => ({
+    run: s.run, lines: null, history: s.h.map(id => blameChain(doc, id)),
+  }));
+  const last = runs[runs.length - 1];
+  last.lines = entry.text;
+  return { runs, lines: entry.text, history: last.history };
+}
+
+// The function as of *run*: the last state at or before it.
+function blameAt(walk, run) {
+  let found = walk.runs[0];
+  for (const state of walk.runs) if (state.run <= run) found = state;
+  return found;
+}
+
+function blameLast(history) {
+  return history && history.length ? history[history.length - 1] : null;
+}
+
+function blameTint(run) {
+  return run == null ? "btin" : `bt${run % BLAME_TINTS}`;
+}
+
+// The line a rendered IR row shows, as plain text.
+function rowText(row) {
+  const code = row.querySelector(".utext");
+  const text = code ? code.textContent : "";
+  return text === "\u00a0" ? "" : text;
+}
+
+const blameCache = new Map();   // "lane:fn" -> walk
+let BLAME = null;               // the walk on screen: {key, walk, ids, failed}
+
+// One document per lane covers every function, so this resolves at most once.
+function ensureBlame(lane, fn) {
+  if (!fn) return;
+  const key = `${lane}:${fn}`;
+  if (BLAME && BLAME.key === key) return;
+  const cached = blameCache.get(key);
+  BLAME = { key, walk: cached || null, ids: blameIds.get(lane) || null, failed: false };
+  if (cached) return;
+  Promise.all([loadBlame(lane), blameIdsFor(lane)]).then(([doc, ids]) => {
+    const walk = blameWalkFor(doc, fn);
+    if (!walk) throw new Error("no lineage for this function");
+    blameCache.set(key, walk);
+    if (!BLAME || BLAME.key !== key) return;
+    BLAME.walk = walk;
+    BLAME.ids = ids;
+    renderMain();
+  }).catch(() => {
+    if (!BLAME || BLAME.key !== key) return;
+    BLAME.failed = true;
+    renderMain();
+  });
+}
+
+// The row the inspector describes, in whichever view is on screen.
+function blameEntry() {
+  const walk = BLAME && BLAME.walk;
+  const line = STATE.blameLine;
+  if (!walk || !line) return null;
+  if (STATE.mode === "blame") {
+    if (line > walk.lines.length) return null;
+    return { run: walk.runs[walk.runs.length - 1].run, text: walk.lines[line - 1],
+             history: walk.history[line - 1] || [] };
+  }
+  const summary = currentPassSummary();
+  if (!summary || !STATE.fn) return null;
+  const after = blameAt(walk, summary.runIndex);
+  let state = after;
+  if (STATE.blameSide === "-") {
+    const i = walk.runs.indexOf(after);
+    state = i > 0 ? walk.runs[i - 1] : walk.runs[0];
+  }
+  if (line > state.history.length) return null;
+  // The row that was clicked is the line as it stood in this state.
+  return { run: state.run, text: STATE.blameText || "", history: state.history[line - 1] || [] };
+}
+
+function blameInspectorHtml() {
+  if (STATE.blameLine == null) return "";
+  if (!BLAME || !BLAME.walk) {
+    const note = BLAME && BLAME.failed
+      ? "no lineage recorded for this function in this report"
+      : "reading the pass lineage…";
+    return `<div class="bdetail bwait">${escapeHtml(note)}</div>`;
+  }
+  const entry = blameEntry();
+  if (!entry) return "";
+  const ids = BLAME.ids || new Map();
+  const rows = entry.history.length
+    ? entry.history.map(ev => {
+        const id = ids.get(ev.run);
+        return `
+        <div class="brow${id == null ? " bnone" : ""}"`
+          + `${id == null ? "" : ` data-goto="${id}"`} title="run ${ev.run}">`
+          + `<span class="brun">${ev.run}</span>`
+          + `<span class="bname">${escapeHtml(ev.name)}</span>`
+          + `<span class="bkind ${ev.kind}">${ev.kind}</span>`
+          + "</div>";
+      }).join("")
+    : '<div class="brow bnone">untouched since the input IR</div>';
+  return `
+    <div class="bdetail">
+      <div class="bdetail-head">
+        <span class="btitle">line ${STATE.blameLine}</span>
+        <code class="bdetail-code">${highlightIR(entry.text) || "&nbsp;"}</code>
+        <span class="bclose" data-bclose="1" title="close">✕</span>
+      </div>
+      <div class="bchain">${rows}</div>
+    </div>`;
+}
+
+function blameRowsHtml(walk) {
+  return walk.lines.map((text, i) => {
+    const last = blameLast(walk.history[i]);
+    const who = last
+      ? `run ${last.run} · ${last.name} · ${last.kind}`
+      : "already in the input IR";
+    return `<div class="urow bline${STATE.blameLine === i + 1 ? " hit" : ""}"`
+      + ` data-blame="${i + 1}" title="${escapeHtml(who)}">`
+      + `<span class="uln">${i + 1}</span>`
+      + `<span class="ublame ${blameTint(last && last.run)}">${last ? last.run : "in"}</span>`
+      + `<code class="utext">${highlightIR(text) || "&nbsp;"}</code>`
+      + "</div>";
+  }).join("");
+}
+
+function blamePaneHtml() {
+  if (!STATE.fn) return pane("BLAME", "", "", '<div class="cfg-empty">(select a function)</div>');
+  const walk = BLAME && BLAME.walk;
+  if (!walk) {
+    const note = BLAME && BLAME.failed
+      ? "(no lineage recorded for this function in this report)"
+      : "(reading the pass lineage…)";
+    return pane("BLAME", "", "", `<div class="cfg-empty">${escapeHtml(note)}</div>`);
+  }
+  const writers = new Set();
+  for (const h of walk.history) {
+    const last = blameLast(h);
+    if (last) writers.add(last.run);
+  }
+  const stat = `${walk.lines.length} lines · ${writers.size} writer`
+    + `${writers.size === 1 ? "" : "s"} · ${escapeHtml(STATE.fn)}`;
+  const fn = escapeHtml(STATE.fn);
+  const body = `
+    <div class="udiff-wrap">
+      <div class="udiff">
+        <div class="ubody">
+          <div class="ufile"><span class="usticky">
+            <span class="uf-a">--- blame/${fn}</span>
+            <span class="uf-b">+++ final/${fn}</span>
+          </span></div>
+          ${blameRowsHtml(walk)}
+        </div>
+      </div>
+    </div>
+    ${blameInspectorHtml()}`;
+  return pane("BLAME", "", stat, body);
 }
 
 /* --- llvm ir highlighting -------------------------------------------------- */
@@ -290,7 +494,7 @@ let STATE = {
   lane: "ir",                // "ir" | "mir" — active lane tab
   passId: null,              // selected pass id (manifest)
   fn: null,                  // selected function name
-  mode: "diff",              // main view: "cfg" | "diff" | "ir" (not the lane)
+  mode: "diff",              // main view: "cfg" | "diff" | "ir" | "blame" (not the lane)
   orientation: "side",       // "side" (side by side) | "stack" (stacked)
   cfgSource: "after",        // CFG pane source: before | after | both
   analysisTypes: ["pdt"],    // analyses pane: any of pdt | cdg | ddg | pdg | mdg | lnt | cg
@@ -299,6 +503,9 @@ let STATE = {
   srcLine: null,             // Source view: correlated source line, or null
   iselBlock: null,           // ISel view: correlated block pair, or null
   iselRefs: [],              // ISel view: IR lines a machine row names
+  blameLine: null,           // Blame/inspector: the IR line being attributed
+  blameSide: "+",            // which side of the diff that line number counts on
+  blameText: "",             // that line's text, as the clicked row rendered it
   bottomOpen: true,
   bottomTab: null,
   splitRatio: 0.5,           // first pane share of the split area
@@ -422,6 +629,7 @@ function renderSpine(max) {
 async function selectPass(id) {
   STATE.passId = id;
   STATE.fn = null;
+  STATE.blameLine = null;
   CURRENT_PASS = null;
   renderPassList();
   const row = document.querySelector("#passList .row.sel");
@@ -489,6 +697,7 @@ function renderFnList() {
 
 function selectFn(name) {
   STATE.fn = name;
+  STATE.blameLine = null;
   renderFnList();
   renderMain();
   renderCtx();
@@ -514,6 +723,14 @@ function renderCtx() {
     document.getElementById("ctx").innerHTML =
       `flow · <span class="fn">${nodes}</span> nodes · `
       + `<span class="fn">${changed}</span> changed · ${passes.length} passes`;
+    return;
+  }
+  if (STATE.mode === "blame") {
+    const walk = BLAME && BLAME.walk;
+    document.getElementById("ctx").innerHTML = walk
+      ? `blame · <span class="fn">${walk.runs.length - 1}</span> changes · `
+        + (STATE.fn ? `fn <span class="fn">${escapeHtml(STATE.fn)}</span>` : "no function")
+      : "blame · reading the lineage…";
     return;
   }
   const s = currentPassSummary();
@@ -648,7 +865,8 @@ function diffPaneHtml() {
           ${unifiedDiffHtml(hunks)}
         </div>
       </div>
-    </div>`;
+    </div>
+    ${blameInspectorHtml()}`;
   return pane("DIFF", chips, stat, body);
 }
 
@@ -675,7 +893,8 @@ function irPaneHtml() {
       ${side("before", "-", del, "(no prior snapshot)")}
       <div class="divider" title="drag to resize"></div>
       ${side("after", "+", add, "(empty)")}
-    </div>`;
+    </div>
+    ${blameInspectorHtml()}`;
   return pane("IR", "", stat, body);
 }
 
@@ -860,6 +1079,17 @@ function selectPassFromOverview(id) {
   selectPass(id);
 }
 
+// The row a blame click landed on, in a diff or IR pane, reads as selected.
+function applyBlameHighlight() {
+  document.querySelectorAll("#split .urow.hit").forEach(row => row.classList.remove("hit"));
+  const line = STATE.blameLine;
+  if (line == null || (STATE.mode !== "diff" && STATE.mode !== "ir")) return;
+  const attr = STATE.blameSide === "-" ? "data-a" : "data-b";
+  document.querySelectorAll(`#split .urow[${attr}="${line}"]`).forEach(row => {
+    if (row.dataset.side === STATE.blameSide) row.classList.add("hit");
+  });
+}
+
 function applySrcHighlight(scrollTo) {
   const line = STATE.srcLine == null ? null : String(STATE.srcLine);
   document.querySelectorAll("#split .urow[data-ln]").forEach(row =>
@@ -877,21 +1107,25 @@ function scrollRowIntoView(row) {
 }
 
 function renderMain() {
+  const mode = effectiveMode();
+  // The lineage document is one file per lane, so it loads on demand.
+  if (mode === "blame" || STATE.blameLine != null) ensureBlame(STATE.lane, STATE.fn);
   renderCtx();
   destroyCfgGraphs();
   const split = document.getElementById("split");
-  const mode = effectiveMode();
   split.innerHTML =
     mode === "structure" ? pipelineTreeHtml()
       : mode === "pipeline" ? pipePaneHtml()
       : mode === "cfg" ? cfgPaneHtml()
-        : mode === "diff" ? diffPaneHtml()
-          : mode === "src" ? srcPaneHtml()
-            : mode === "analyses" ? analysesPaneHtml()
-              : mode === "isel" ? iselPaneHtml()
-                : irPaneHtml();
+        : mode === "blame" ? blamePaneHtml()
+          : mode === "diff" ? diffPaneHtml()
+            : mode === "src" ? srcPaneHtml()
+              : mode === "analyses" ? analysesPaneHtml()
+                : mode === "isel" ? iselPaneHtml()
+                  : irPaneHtml();
   if (mode === "src") applySrcHighlight("cmapside");
   if (mode === "isel") applyIselHighlight();
+  applyBlameHighlight();
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
@@ -2137,7 +2371,7 @@ function resizeGraphs() {
 const UI_VALUES = {
   lane: ["lane", ["ir", "mir"]],
   mode: ["mode",
-    ["cfg", "diff", "ir", "src", "isel", "analyses", "structure", "pipeline"]],
+    ["cfg", "diff", "ir", "blame", "src", "isel", "analyses", "structure", "pipeline"]],
   orientation: ["orientation", ["side", "stack"]],
 };
 
@@ -2189,6 +2423,7 @@ document.querySelectorAll("#passPanel .ptab").forEach(b =>
     STATE.lane = b.dataset.lane;
     STATE.passId = null;
     STATE.fn = null;
+    STATE.blameLine = null;
     CURRENT_PASS = null;
     renderLaneTabs();
     renderPassList();
@@ -2217,6 +2452,7 @@ document.getElementById("modeCtl").addEventListener("click", evt => {
   const b = evt.target.closest(".chip[data-mode]");
   if (!b || !modeAvailable(b.dataset.mode)) return;
   if (!OVERVIEW_MODES.includes(b.dataset.mode)) STATE.lastMode = b.dataset.mode;
+  if (STATE.mode !== b.dataset.mode) STATE.blameLine = null;  // lines mean different things per view
   STATE.mode = b.dataset.mode;
   renderMain();
 });
@@ -2274,6 +2510,48 @@ document.getElementById("split").addEventListener("click", evt => {
     STATE.iselRefs = repeat ? [] : refs;
     // Scroll the *other* pane: the side you clicked is already in view.
     applyIselHighlight(link.closest(".iselmir") ? "iselir" : "iselmir");
+    return;
+  }
+
+  // Blame: a click in the chain jumps to the pass that wrote the line.
+  const goto = evt.target.closest("#split .brow[data-goto]");
+  if (goto) {
+    // The pass is the point of the jump, so land on the function it wrote to.
+    const fn = STATE.fn;
+    selectPass(+goto.dataset.goto).then(() => {
+      if (!fn || STATE.fn === fn || !fnNames().includes(fn)) return;
+      STATE.fn = fn;
+      renderFnList();
+      renderMain();
+    });
+    return;
+  }
+  if (evt.target.closest("#split .bclose")) {
+    STATE.blameLine = null;
+    renderMain();
+    return;
+  }
+
+  // Any IR row can be attributed: blame's own rows, or either side of a diff.
+  const bline = evt.target.closest("#split .urow[data-blame]");
+  if (bline) {
+    const n = +bline.dataset.blame;
+    STATE.blameLine = STATE.blameLine === n ? null : n;
+    STATE.blameSide = "+";
+    renderMain();
+    return;
+  }
+  const dline = evt.target.closest("#split .urow[data-side]");
+  if (dline && (STATE.mode === "diff" || STATE.mode === "ir")) {
+    const side = dline.dataset.side === "-" ? "-" : "+";
+    const n = +(side === "-" ? dline.dataset.a : dline.dataset.b);
+    if (!n) return;
+    const repeat = STATE.blameLine === n && STATE.blameSide === side;
+    STATE.blameLine = repeat ? null : n;
+    STATE.blameSide = side;
+    // This row is the line as it stood in the state being inspected.
+    STATE.blameText = rowText(dline);
+    renderMain();
     return;
   }
 

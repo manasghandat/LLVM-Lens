@@ -42,7 +42,7 @@ flags:                   # appended as written; the flags add to these
 
 ui:
   lane: ir               # ir | mir
-  mode: diff             # cfg | diff | ir | src | isel | analyses | structure | pipeline
+  mode: diff             # cfg | diff | ir | blame | src | isel | analyses | structure | pipeline
   analysis: [pdt]        # pdt | cdg | ddg | pdg | mdg | lnt | cg, or all (the six per-function)
   orientation: side      # side | stack
   split-ratio: 0.5       # first pane's share of the split, 0.15-0.85

@@ -29,6 +29,7 @@ class IrSnapshot:
     # Removed bookkeeping, kept for its `!N = !DI...` source-mapping nodes.
     metadata: str = ""
     module_scope: bool = False
+    line: int = 0  # 1-based line of the dump's header, to place it in the stream
 
     @property
     def text(self) -> str:
@@ -43,23 +44,28 @@ def parse_changed_ir(stderr: str) -> list[IrSnapshot]:
     function: str = ""
     body: list[str] = []
     module_scope: bool = False
+    header_line = 0
 
     def finish() -> None:
-        nonlocal pass_name, function, body, module_scope
+        nonlocal pass_name, function, body, module_scope, header_line
         if pass_name is not None:
             code, metadata = split_module_noise(body)
-            snapshots.append(IrSnapshot(pass_name, function, code, metadata, module_scope))
+            snapshots.append(
+                IrSnapshot(pass_name, function, code, metadata, module_scope, header_line)
+            )
         pass_name = None
         function = ""
         body = []
         module_scope = False
+        header_line = 0
 
-    for line in stderr.splitlines():
+    for line_no, line in enumerate(stderr.splitlines(), start=1):
         match = HEADER_RE.match(line)
         if match:
             finish()
             pass_name = match.group(1)
             function = match.group(2)
+            header_line = line_no
             continue
         if pass_name is None or NOISE_RE.match(line):
             continue

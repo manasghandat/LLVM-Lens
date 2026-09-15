@@ -95,7 +95,8 @@ SCHEMA: dict[str, Any] = {
         "mode": Field(
             "diff", "View open on load.",
             kind="enum",
-            choices=("cfg", "diff", "ir", "src", "isel", "analyses", "structure", "pipeline"),
+            choices=("cfg", "diff", "ir", "blame", "src", "isel", "analyses",
+                     "structure", "pipeline"),
         ),
         "analysis": Field(
             ("pdt",), "Graphs view: which analysis graphs to draw (a list, or 'all').",

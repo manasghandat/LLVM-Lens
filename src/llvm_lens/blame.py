@@ -1,0 +1,365 @@
+"""Per-line blame: which pass put each line of a snapshot where it is.
+
+`opt` only dumps when a pass changed the IR, so every line has one pass that
+put it there. This module walks the whole dump stream — every repeat of a pass
+included — and records, per function, that lineage: the input state, then every
+state after it, each line tagged with the writers that produced it.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Sequence
+
+from .emit import MODULE_FN, ReportPass
+from .parsers.debug_pass_manager import PassRun
+from .parsers.print_changed import IrSnapshot, split_module_functions
+
+INPUT_NAME = "Input IR"
+KINDS = ("created", "rewritten", "renamed")
+
+SCC_RE = re.compile(r"^\(([^(),]+)\)$")
+LOOP_RE = re.compile(r"^loop .* in function (.+)$")
+SSA_RE = re.compile(r"%[\w.]+")
+LABEL_RE = re.compile(r"\b\d+:")
+
+# opt driver passes clang never runs; no card, and no state worth blaming.
+DRIVER_PASSES = frozenset({"VerifierPass", "PrintModulePass"})
+
+
+# --- naming -------------------------------------------------------------------
+
+
+def canonical_fn(name: str) -> str:
+    """The entity a dump belongs to, as the report tracks it."""
+    match = SCC_RE.match(name) or LOOP_RE.match(name)
+    return match.group(1) if match else name
+
+
+def entity_text(entity: str, body: str) -> str:
+    """The part of one module-scope dump body that belongs to *entity*."""
+    if entity == MODULE_FN:
+        return body
+    bodies = split_module_functions(body)
+    if not bodies:
+        return body
+    if entity.startswith("(") and entity.endswith(")"):
+        members = [name.strip() for name in entity[1:-1].split(",")]
+        chosen = [bodies[name] for name in members if name in bodies]
+        return "\n\n".join(chosen) if chosen else body
+    return bodies.get(entity, body)
+
+
+def dump_states(dump: IrSnapshot) -> dict[str, str]:
+    """Every entity this dump is authoritative about, as it stood just then."""
+    entity = canonical_fn(dump.function)
+    out: dict[str, str] = {}
+    if dump.module_scope or entity == MODULE_FN:
+        # A module-scope body is the whole module, whoever the header names, so
+        # it fixes the state of every function in it, not just its own entity.
+        out[MODULE_FN] = dump.ir
+        out.update(split_module_functions(dump.ir))
+    if entity != MODULE_FN:
+        out[entity] = entity_text(entity, dump.ir)
+    return out
+
+
+def split_lines(text: str) -> list[str]:
+    """The lines of *text*, split the way the diff view splits it."""
+    if not text:
+        return []
+    body = text[:-1] if text.endswith("\n") else text
+    return body.split("\n")
+
+
+# --- the walk -----------------------------------------------------------------
+
+
+def blame_key(line: str) -> str:
+    """SSA renumbering (%3 -> %7) and a relabelled block are still the same line."""
+    return LABEL_RE.sub(":", SSA_RE.sub("%", line)).strip()
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One pass writing one line."""
+
+    run: int
+    name: str
+    kind: str
+
+
+@dataclass
+class State:
+    """A function as of one run, with every line's writers, oldest first."""
+
+    run: int
+    lines: list[str]
+    history: list[list[Entry]]
+
+
+def _plan(before: Sequence[str], after: Sequence[str]) -> list[tuple[int | None, str | None]]:
+    """For each line of *after*: the line of *before* it came from, and how.
+
+    A None source means the line is new here; a None kind means it is untouched.
+    Common head and tail are stripped first, as the diff view does, so a run of
+    changes in the middle is all the matcher ever sees.
+    """
+    head = 0
+    while head < len(before) and head < len(after) and before[head] == after[head]:
+        head += 1
+    tail = 0
+    while (tail < len(before) - head and tail < len(after) - head
+           and before[len(before) - 1 - tail] == after[len(after) - 1 - tail]):
+        tail += 1
+    old = list(before[head:len(before) - tail])
+    new = list(after[head:len(after) - tail])
+
+    plan: list[tuple[int | None, str | None]] = [(None, None)] * len(after)
+    for k in range(head):
+        plan[k] = (k, None)
+    for k in range(tail):
+        plan[len(after) - 1 - k] = (len(before) - 1 - k, None)
+
+    # The same longest-common-subsequence walk the diff view runs, so that a
+    # line this calls rewritten is a line the diff shows as a change.
+    n, m = len(old), len(new)
+    dp = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        row, below = dp[i], dp[i + 1]
+        for j in range(m - 1, -1, -1):
+            row[j] = below[j + 1] + 1 if old[i] == new[j] else max(below[j], row[j + 1])
+
+    dels: list[int] = []
+    adds: list[int] = []
+
+    def flush() -> None:
+        # Every change run pairs its deletions with its insertions in order.
+        for k, j in enumerate(adds):
+            source = dels[k] if k < len(dels) else None
+            kind = "created" if source is None else (
+                "renamed" if blame_key(old[source]) == blame_key(new[j]) else "rewritten"
+            )
+            plan[head + j] = (head + source if source is not None else None, kind)
+        dels.clear()
+        adds.clear()
+
+    i = j = 0
+    while i < n or j < m:
+        if i < n and j < m and old[i] == new[j]:
+            flush()
+            plan[head + j] = (head + i, None)
+            i += 1
+            j += 1
+        elif j >= m or (i < n and dp[i + 1][j] >= dp[i][j + 1]):
+            dels.append(i)
+            i += 1
+        else:
+            adds.append(j)
+            j += 1
+    flush()
+    return plan
+
+
+def advance(
+    lines: Sequence[str], history: Sequence[Sequence[Entry]], run: int, name: str, text: str,
+) -> tuple[list[str], list[list[Entry]]]:
+    """The lines of *text*, each carrying its writers, plus this pass's own."""
+    after = split_lines(text)
+    out_lines: list[str] = []
+    out_history: list[list[Entry]] = []
+    for index, (source, kind) in enumerate(_plan(list(lines), after)):
+        out_lines.append(after[index])
+        prior = list(history[source]) if source is not None and source < len(history) else []
+        if kind is None:
+            out_history.append(prior)
+        else:
+            out_history.append(prior + [Entry(run, name, kind)])
+    return out_lines, out_history
+
+
+def walk(states: Sequence[tuple[int, str, str]]) -> list[State]:
+    """states: (run, pass, text) wherever the text changed, oldest first.
+
+    Run 0 is the state a lane was handed, so its lines start unowned; a lane
+    that starts at a pass (the machine lane) has every line created by it.
+    """
+    out: list[State] = []
+    lines: list[str] = []
+    history: list[list[Entry]] = []
+    for index, (run, name, text) in enumerate(states):
+        if index == 0 and run == 0:
+            lines = split_lines(text)
+            history = [[] for _ in lines]
+        else:
+            lines, history = advance(lines, history, run, name, text)
+        out.append(State(run, lines, history))
+    return out
+
+
+# --- lane A: the dump stream, run by run --------------------------------------
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One card's worth of pipeline: a pass run, and the dump it left behind."""
+
+    run_index: int
+    name: str
+    run: PassRun
+    dumps: tuple[IrSnapshot, ...] = ()
+
+
+def dumps_by_run(runs: Sequence[PassRun], dumps: Sequence[IrSnapshot]) -> dict[int, list[IrSnapshot]]:
+    """Match each dump to the run it came from: the last run before its header."""
+    by_name: dict[str, list[PassRun]] = {}
+    for run in runs:
+        by_name.setdefault(run.name, []).append(run)
+    found: dict[int, list[IrSnapshot]] = {}
+    for dump in dumps:
+        chosen = None
+        for run in by_name.get(dump.pass_name, ()):
+            if run.line < dump.line:
+                chosen = run
+            else:
+                break
+        if chosen is not None:
+            found.setdefault(chosen.index, []).append(dump)
+    return found
+
+
+def lane_a_slots(runs: Sequence[PassRun], dumps: Sequence[IrSnapshot]) -> list[Slot]:
+    """The pipeline as cards: every run that left a state, plus one card for
+    each pass that never changed anything."""
+    by_run = dumps_by_run(runs, dumps)
+    dumping = {dump.pass_name for dump in dumps}
+    slots: list[Slot] = []
+    listed: set[str] = set()
+    for run in runs:
+        if run.name in DRIVER_PASSES:
+            continue
+        left = tuple(by_run.get(run.index, ()))
+        if not left and (run.name in dumping or run.name in listed):
+            continue
+        listed.add(run.name)
+        slots.append(Slot(len(slots) + 1, run.name, run, left))
+    return slots
+
+
+# --- the timelines ------------------------------------------------------------
+
+
+@dataclass
+class Timeline:
+    """What each entity looked like, over one lane, and when it changed."""
+
+    states: dict[str, list[tuple[int, str, str]]] = field(default_factory=dict)
+    changes: dict[int, list[str]] = field(default_factory=dict)
+
+    def record(self, name: str, run: int, pass_name: str, text: str) -> bool:
+        """Note an entity's text as of *run*, if it is not what it already was."""
+        line = self.states.setdefault(name, [])
+        if line and line[-1][2] == text:
+            return False
+        line.append((run, pass_name, text))
+        self.changes.setdefault(run, []).append(name)
+        return True
+
+    def seed(self, text: str) -> None:
+        """The input state: the module a lane was handed, and its functions."""
+        for name, body in {MODULE_FN: text, **split_module_functions(text)}.items():
+            self.states[name] = [(0, INPUT_NAME, body)]
+
+    def names(self) -> Iterable[str]:
+        return self.states
+
+    def at(self, name: str, run: int) -> str:
+        """The text of *name* as of *run*; "" if it did not exist yet."""
+        text = ""
+        for state_run, _pass, state_text in self.states.get(name, ()):
+            if state_run > run:
+                break
+            text = state_text
+        return text
+
+    def changed_at(self, run: int) -> list[str]:
+        return self.changes.get(run, [])
+
+
+def lane_a_timeline(slots: Sequence[Slot], input_ir: str | None) -> Timeline:
+    """Follow every entity through the whole dump stream, repeats included."""
+    timeline = Timeline()
+    if input_ir is not None:
+        timeline.seed(input_ir)
+    for slot in slots:
+        if not slot.dumps:
+            continue
+        for name, text in dump_states(slot.dumps[-1]).items():
+            timeline.record(name, slot.run_index, slot.name, text)
+    return timeline
+
+
+def mir_timeline(passes: Sequence[ReportPass]) -> Timeline:
+    """Follow every machine function through the cards, as their diffs show it.
+
+    A card is one pass id, however many times it ran, so its before/after is the
+    whole span it covers — and that span is the state blame may name.
+    """
+    timeline = Timeline()
+    for card in passes:
+        for name, change in card.functions.items():
+            timeline.record(name, card.run_index, card.name, change.after)
+    return timeline
+
+
+# --- the artifact the report ships --------------------------------------------
+
+
+def blame_document(lane: str, timeline: Timeline) -> dict[str, Any]:
+    """One lane's walks, as small as they go: pass names and line chains interned."""
+    names = [INPUT_NAME]
+    name_ids = {INPUT_NAME: 0}
+    events: list[list[int]] = []
+    event_ids: dict[tuple[int, int, str], int] = {}
+    chains: list[list[int]] = [[]]
+    chain_ids: dict[tuple[int, ...], int] = {(): 0}
+
+    def name_id(name: str) -> int:
+        if name not in name_ids:
+            name_ids[name] = len(names)
+            names.append(name)
+        return name_ids[name]
+
+    def event_id(entry: Entry) -> int:
+        key = (entry.run, name_id(entry.name), entry.kind)
+        if key not in event_ids:
+            event_ids[key] = len(events)
+            events.append([entry.run, key[1], KINDS.index(entry.kind)])
+        return event_ids[key]
+
+    def chain_id(history: Sequence[Entry]) -> int:
+        key = tuple(event_id(entry) for entry in history)
+        if key not in chain_ids:
+            chain_ids[key] = len(chains)
+            chains.append(list(key))
+        return chain_ids[key]
+
+    functions: dict[str, Any] = {}
+    for name, states in timeline.states.items():
+        walked = walk(states)
+        functions[name] = {
+            "text": walked[-1].lines if walked else [],
+            "states": [
+                {"run": state.run, "h": [chain_id(h) for h in state.history]}
+                for state in walked
+            ],
+        }
+    return {
+        "lane": lane,
+        "names": names,
+        "kinds": list(KINDS),
+        "events": events,
+        "hist": chains,
+        "functions": functions,
+    }
