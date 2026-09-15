@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .analyses import compute_analyses
+from .blame import (
+    INPUT_NAME, Timeline, blame_document, canonical_fn, lane_a_slots,
+    lane_a_timeline, mir_timeline,
+)
 from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
 from .config import load_config
@@ -38,13 +42,8 @@ MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After ")
 
 __all__ = ["DEFAULT_PASSES", "build_report", "build_lane_a", "build_lane_b"]
 
-INPUT_PASS_NAME = "Input IR"
+INPUT_PASS_NAME = INPUT_NAME
 BACKEND_INPUT_PASS_NAME = "Optimized IR"
-SCC_FN_RE = re.compile(r"^\(([^(),]+)\)$")
-LOOP_FN_RE = re.compile(r"^loop .* in function (.+)$")
-
-# opt driver passes clang never runs; omitted to match -fdebug-pass-structure.
-OPT_DRIVER_PASSES = frozenset({"VerifierPass", "PrintModulePass"})
 
 
 # --- lane builders -----------------------------------------------------------
@@ -138,125 +137,71 @@ def _attribute_time_ms(
     return totals
 
 
-def _canonical_fn(name: str) -> str:
-    """The entity a dump belongs to, as the report tracks it."""
-    match = SCC_FN_RE.match(name) or LOOP_FN_RE.match(name)
-    return match.group(1) if match else name
-
-
-def _entity_text(entity: str, body: str) -> str:
-    """The part of one module-scope dump body that belongs to *entity*."""
-    if entity == MODULE_FN:
-        return body
-    bodies = split_module_functions(body)
-    if not bodies:
-        return body
-    if entity.startswith("(") and entity.endswith(")"):
-        members = [name.strip() for name in entity[1:-1].split(",")]
-        chosen = [bodies[name] for name in members if name in bodies]
-        return "\n\n".join(chosen) if chosen else body
-    return bodies.get(entity, body)
-
-
-def build_lane_a(
+def lane_a_passes(
     stderr: str,
     custom_passes: tuple[str, ...] = (),
     input_ir: str | None = None,
     mapped: bool = True,
-) -> list[ReportPass]:
-    """Assemble Lane A (opt) passes from captured stderr."""
+) -> tuple[list[ReportPass], Timeline]:
+    """Lane A (opt): its cards, and the per-entity timeline behind them."""
     from .parsers.debug_pass_manager import scope_of
 
     runs = parse_pass_runs(stderr)
     dumps = parse_changed_ir(stderr)
     time_blocks = parse_time_passes(stderr)
 
-    order: list[str] = []
-    first_run_lines: list[int] = []  # aligned with `order`
-    # Pass name -> pass-manager scope; the first run's scope wins.
-    scope_by_name: dict[str, str] = {}
+    slots = lane_a_slots(runs, dumps)
+    timeline = lane_a_timeline(slots, input_ir)
+
+    analyses: dict[int, dict[str, list[str]]] = {}
     for run in runs:
-        if run.name not in order:
-            order.append(run.name)
-            first_run_lines.append(run.line)
-            scope_by_name[run.name] = scope_of(run.function)
-
-    snap: dict[tuple[str, str], str] = {}
-    snap_src: dict[tuple[str, str], LineMap] = {}
-    fn_order: dict[str, int] = {}
-    for dump in dumps:
-        key = (dump.pass_name, _canonical_fn(dump.function))
-        fn_order.setdefault(key[1], len(fn_order))
-        if key in snap:
-            continue
-        snap[key] = _entity_text(key[1], dump.ir)
-        table = parse_debug_table(dump.metadata) if mapped and dump.metadata else None
-        if table:
-            snap_src[key] = map_lines(snap[key], table)
-
-    module_before: dict[str, str] = {}
-    last_module = input_ir
-    for dump in dumps:
-        if _canonical_fn(dump.function) == MODULE_FN and last_module is not None:
-            # First whole-module body seen up to (but not including) this dump.
-            module_before.setdefault(dump.pass_name, last_module)
-        if dump.function == MODULE_FN or dump.module_scope:
-            last_module = dump.ir
-
-    analyses: dict[str, dict[str, list[str]]] = {}
-    for run in runs:
-        bucket = analyses.setdefault(run.name, {"run": [], "cached": [], "invalidated": []})
+        bucket = analyses.setdefault(run.index, {"run": [], "cached": [], "invalidated": []})
         for event in run.analyses:
             bucket["cached" if event.cached else "run"].append(f"{event.name} on {event.function}")
         for event in run.invalidated:
             bucket["invalidated"].append(f"{event.name} on {event.function}")
 
     summary_ms = _summary_times_ms(time_blocks)
-    anchor_ms = _attribute_time_ms(time_blocks, first_run_lines)
+    anchor_ms = _attribute_time_ms(time_blocks, [slot.run.line for slot in slots])
 
     passes: list[ReportPass] = []
-    # Last known text/CFG of each dumped entity, keyed the way opt names it.
-    prev_text: dict[str, str] = {}
+    # Last CFG drawn for each entity; the DOT is a pure function of the text.
     prev_dots: dict[str, str | None] = {}
     # Functions the module currently holds, in module order.
     known_fns: list[str] = []
     if input_ir is not None:
-        prev_text[MODULE_FN] = input_ir
-        for fn, text in split_module_functions(input_ir).items():
-            prev_text[fn] = text
-            prev_dots[fn] = ir_cfg_dot(text, fn)
-            known_fns.append(fn)
+        known_fns = list(split_module_functions(input_ir))
     line_count = len(stderr.splitlines()) + 1
-    for run_index, name in enumerate(order, start=1):
+
+    for index, slot in enumerate(slots):
+        run_index = slot.run_index
+        dumped = slot.dumps[-1] if slot.dumps else None
+        # The module row is the whole-module overview, and only the passes that
+        # ran on the module get one. Such a dump is also authoritative about
+        # what the module holds.
+        named_module = dumped is not None and canonical_fn(dumped.function) == MODULE_FN
+        if named_module:
+            known_fns = list(split_module_functions(dumped.ir))
+
+        # Module, then functions in module order, then loop/SCC entities.
+        listed = [MODULE_FN] if named_module else []
+        listed += [fn for fn in known_fns if fn != MODULE_FN]
+        listed += [fn for fn in sorted(timeline.changed_at(run_index))
+                   if fn != MODULE_FN and fn not in listed]
+
         fn_changes: dict[str, FnChange] = {}
         src_maps: dict[str, LineMap] = {}
-        for fn in sorted(fn_order, key=fn_order.get):
-            after = snap.get((name, fn))
-            if after is None:
-                continue
-            before = module_before.get(name, prev_text.get(fn, "")) if fn == MODULE_FN else prev_text.get(fn, "")
-            fn_changes[fn] = FnChange(fn, before, after)
-            after_src = snap_src.get((name, fn))
-            if after_src is not None:
-                src_maps[fn] = after_src
-        for entity, change in list(fn_changes.items()):
-            if entity != MODULE_FN:
-                continue
-            for member, text in split_module_functions(change.after).items():
-                if member not in fn_changes:
-                    fn_changes[member] = FnChange(member, prev_text.get(member, ""), text)
-        # A module/SCC dump also carries the new state of every function inside it.
-        bodies: dict[str, str] = {}
-        for fn, change in fn_changes.items():
-            prev_text[fn] = change.after
-            bodies.update(split_module_functions(change.after))
-        prev_text.update(bodies)
-        # Keep cards for passes with no dumps too; "changed only" hides them.
-        if name in OPT_DRIVER_PASSES:
-            continue
+        for fn in listed:
+            after = timeline.at(fn, run_index)
+            if after:
+                # The state before this card is the state this one replaced.
+                fn_changes[fn] = FnChange(fn, timeline.at(fn, run_index - 1), after)
+        if dumped is not None and mapped and dumped.metadata:
+            table = parse_debug_table(dumped.metadata)
+            entity = canonical_fn(dumped.function)
+            if table and entity in fn_changes:
+                src_maps[entity] = map_lines(fn_changes[entity].after, table)
 
-        first_run_line = first_run_lines[run_index - 1]
-        end_line = first_run_lines[run_index] if run_index < len(first_run_lines) else line_count
         dots: dict[str, tuple[str | None, str | None]] = {}
         for fn, change in fn_changes.items():
             if fn == MODULE_FN:
@@ -266,44 +211,41 @@ def build_lane_a(
                 ir_cfg_dot(change.after, fn) if change.changed else prev_dots.get(fn),
             )
             prev_dots[fn] = dots[fn][1]
-        for fn, text in bodies.items():
-            prev_dots[fn] = ir_cfg_dot(text, fn)
 
-        # A module dump is authoritative about what the module holds.
-        if MODULE_FN in fn_changes:
-            known_fns = list(split_module_functions(fn_changes[MODULE_FN].after))
+        if dumped is not None:
+            # Extend after the fill so a multi-function SCC is not listed twice.
+            known_fns.extend(
+                fn for fn in split_module_functions(dumped.ir) if fn not in known_fns
+            )
 
-        # List every function on every card (changed=False for untouched ones).
-        for fn in known_fns:
-            text = prev_text.get(fn)
-            if fn in fn_changes or not text:
-                continue
-            fn_changes[fn] = FnChange(fn, text, text)
-            dots[fn] = (prev_dots.get(fn), prev_dots.get(fn))
-        # Module, then functions in module order, then loop/SCC entities.
-        ordered = [MODULE_FN] + known_fns + sorted(set(fn_changes) - {MODULE_FN} - set(known_fns))
-        fn_changes = {fn: fn_changes[fn] for fn in ordered if fn in fn_changes}
-
-        # Extend after the fill so a multi-function SCC is not listed twice.
-        known_fns.extend(fn for fn in bodies if fn not in known_fns)
-
+        end_line = slots[index + 1].run.line if index + 1 < len(slots) else line_count
         passes.append(ReportPass(
             id=0,  # assigned by build_report
             lane="ir",
-            name=name,
-            pass_id=name,
+            name=slot.name,
+            pass_id=slot.name,
             run_index=run_index,
             changed=any(c.changed for c in fn_changes.values()),
             functions=fn_changes,
             dots=dots,
-            analyses=analyses.get(name, {"run": [], "cached": [], "invalidated": []}),
-            log=_pass_log(stderr, first_run_line, end_line),
-            time_ms=summary_ms.get(name, anchor_ms.get(run_index - 1)),
-            is_custom=_is_custom(name, custom_passes),
+            analyses=analyses.get(slot.run.index, {"run": [], "cached": [], "invalidated": []}),
+            log=_pass_log(stderr, slot.run.line, end_line),
+            time_ms=summary_ms.get(slot.name, anchor_ms.get(run_index - 1)),
+            is_custom=_is_custom(slot.name, custom_passes),
             src_maps=src_maps,
-            scope=scope_by_name.get(name),
+            scope=scope_of(slot.run.function),
         ))
-    return passes
+    return passes, timeline
+
+
+def build_lane_a(
+    stderr: str,
+    custom_passes: tuple[str, ...] = (),
+    input_ir: str | None = None,
+    mapped: bool = True,
+) -> list[ReportPass]:
+    """Assemble Lane A (opt) passes from captured stderr."""
+    return lane_a_passes(stderr, custom_passes, input_ir, mapped)[0]
 
 
 def build_input_pass(
@@ -351,9 +293,11 @@ def _build_ir_tree(passes: list[ReportPass]) -> dict[str, object]:
     }
     have = {k: False for k in sections}
 
+    seen: set[str] = set()
     for pass_ in passes:
-        if pass_.is_input:
-            continue
+        if pass_.is_input or pass_.name in seen:
+            continue  # a pass that runs again is one node in the pipeline's shape
+        seen.add(pass_.name)
         scope = pass_.scope or "function"
         if scope not in sections:
             scope = "function"
@@ -377,6 +321,16 @@ def build_lane_b(
     mir_table: DebugTable | None = None,
 ) -> tuple[list[ReportPass], list[PassNode], str | None]:
     """Assemble Lane B (llc) passes from captured stderr. Returns (passes, structure_nodes, pass_arguments)."""
+    return lane_b_passes(stderr, asm_text, custom_passes, mir_table)[:3]
+
+
+def lane_b_passes(
+    stderr: str,
+    asm_text: str | None = None,
+    custom_passes: tuple[str, ...] = (),
+    mir_table: DebugTable | None = None,
+) -> tuple[list[ReportPass], list[PassNode], str | None, Timeline]:
+    """Lane B (llc): its cards, the pass-manager tree, and the MIR timeline."""
     snapshots = parse_mir_snapshots(stderr)
     nodes, pass_arguments = parse_pass_structure(stderr)
     machine_analyses = analyses_by_pass(nodes)
@@ -465,7 +419,9 @@ def build_lane_b(
         _attach_isel(passes[0], by_id[order[0]], parse_ir_dumps(stderr))
     if passes and asm_text:
         passes[-1].asm = asm_text
-    return passes, nodes, pass_arguments
+    card_of = {pass_id: (index, by_id[pass_id][0].pass_name)
+               for index, pass_id in enumerate(order, start=1)}
+    return passes, nodes, pass_arguments, mir_timeline(passes)
 
 
 def _attach_isel(card: ReportPass, group: list[Any], ir_dumps: list[IrDump]) -> None:
@@ -644,14 +600,17 @@ def build_report(
 
     mir_nodes: list[PassNode] = []
     pass_arguments: str | None = None
+    ir_timeline = Timeline()
     if not opt_result.timed_out:
-        lane_a += build_lane_a(
+        ir_passes, ir_timeline = lane_a_passes(
             opt_stderr, custom_passes,
             input_ir=input_card.functions[MODULE_FN].after,
             mapped=source_map,
         )
+        lane_a += ir_passes
 
     lane_b: list[ReportPass] = []
+    mir_timeline_states = Timeline()
     llc_result = None
     if not opt_result.failed and opt_result.ir_path is not None:
         lane_b.append(build_input_pass(
@@ -672,10 +631,10 @@ def build_report(
                 opt_result.ir_path, toolchain=toolchain,
                 load=load, timeout=timeout, extra_args=llc_extra,
             ) if source_map else None
-            lane_b_passes, mir_nodes, pass_arguments = build_lane_b(
+            built, mir_nodes, pass_arguments, mir_timeline_states = lane_b_passes(
                 llc_stderr, asm_text, custom_passes, mir_table,
             )
-            lane_b += lane_b_passes
+            lane_b += built
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b
@@ -732,6 +691,10 @@ def build_report(
         out, passes=all_passes, metadata=metadata,
         frontend_dir=default_frontend_dir(),
         ai_config=resolved_ai,
+        blame={
+            "ir": blame_document("ir", ir_timeline),
+            "mir": blame_document("mir", mir_timeline_states),
+        },
     )
 
     return {

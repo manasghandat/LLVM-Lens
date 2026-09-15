@@ -10,6 +10,11 @@ behavior across IR and Machine IR.
   Lane B the `llc` backend (Machine IR).
 - **Per-pass cards** — before/after diffs, control-flow graphs, per-function
   analysis activity, timing, spills, and register-allocation maps.
+- **Per-line blame** — every line of IR or Machine IR knows which pass put it
+  there. The Blame view shows that as a tinted gutter, and any line in the Diff
+  or IR view can be clicked to see its whole chain — every pass that touched
+  the line since the input, oldest first, each tagged created, rewritten or
+  renamed. Clicking a pass in the chain jumps to its card.
 - **Source correlation** — every IR/MIR line maps back to its C/C++ source line
   when the input carries debug info.
 - **Custom passes** — `--load-pass-plugin`, `--load`, and `--custom-pass` load
@@ -137,7 +142,7 @@ flags:                  # extra arguments for each tool
 
 ui:                     # what the report opens on
   lane: ir              # ir | mir
-  mode: cfg             # cfg | diff | ir | src | isel | analyses | structure | pipeline
+  mode: cfg             # cfg | diff | ir | blame | src | isel | analyses | structure | pipeline
   analysis: [pdt]       # pdt | cdg | ddg | pdg | mdg | lnt | cg, or all
   orientation: side     # side | stack
   split-ratio: 0.5
@@ -267,6 +272,14 @@ is the default choice; it costs more, which is the trade the prompt is for.
 captured streams, and emits `manifest.json` plus per-pass JSON chunks and a copy
 of the report frontend. A crashed or timed-out `opt`/`llc` still yields a
 partial report.
+
+Because `opt` only dumps when a pass actually changed the IR, a pass that left
+no dump changed nothing, and every line has a pass that put it there. The build
+walks that whole stream to produce the per-line lineage, so a card is one pass
+*run*, not one pass name: a pass that ran ten times and changed something ten
+times gets ten cards. That is what lets the Diff view show one pass's work and
+nothing else, and lets every name in a blame chain land on a card showing
+exactly the state it names.
 
 ## Development
 

@@ -193,6 +193,7 @@ def emit_report(
     metadata: dict[str, Any],
     frontend_dir: str | Path,
     ai_config: dict[str, Any] | None = None,
+    blame: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     """Write the report into *report_dir*; returns the manifest path."""
     report_dir = Path(report_dir)
@@ -204,6 +205,19 @@ def emit_report(
         _write_json_plus_script(data_dir / "ai-config", ai, AI_CONFIG_ASSIGN)
     else:
         for stale in (data_dir / "ai-config.json", data_dir / "ai-config.js"):
+            stale.unlink(missing_ok=True)
+
+    # One lineage document per lane; a lane that is gone this build takes its
+    # document with it, or a stale one would answer for the new report.
+    for lane, document in (blame or {}).items():
+        _write_json_plus_script(
+            data_dir / f"blame-{lane}", document,
+            f'window.__LLVM_LENS_DATA__["blame-{lane}"]',
+        )
+    for lane in ("ir", "mir"):
+        if blame and lane in blame:
+            continue
+        for stale in (data_dir / f"blame-{lane}.json", data_dir / f"blame-{lane}.js"):
             stale.unlink(missing_ok=True)
 
     manifest = _manifest_json(passes, metadata)
