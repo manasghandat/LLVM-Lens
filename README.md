@@ -65,7 +65,7 @@ a report without naming a path at all:
 ```sh
 llvm-lens --sample --open                             # side-channel, the default
 llvm-lens --sample register-pressure                  # 16 live lanes: spills and reloads
-llvm-lens --sample vectorize  --passes 'default<O0>'  # a loop that widens, one that cannot, with O0
+llvm-lens --sample vectorize  --passes 'default<O3>'  # a loop that widens, one that cannot, at O3
 llvm-lens --sample switch-lowering                    # jump table vs. comparison tree
 llvm-lens --sample licm                               # what the loop hoists, and what it cannot
 ```
