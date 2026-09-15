@@ -2239,10 +2239,9 @@ document.getElementById("split").addEventListener("click", evt => {
   const analysis = evt.target.closest(".ptab[data-analysis]");
   if (analysis) {
     const t = analysis.dataset.analysis;
-    // A toggle, not a selection: graphs are meant to be read side by side.
-    STATE.analysisTypes = STATE.analysisTypes.includes(t)
-      ? STATE.analysisTypes.filter(x => x !== t)
-      : ANALYSIS_TYPES.filter(x => x === t || STATE.analysisTypes.includes(x));
+    // A click selects that graph alone; only the file opens on several.
+    if (STATE.analysisTypes.length === 1 && STATE.analysisTypes[0] === t) return;  // already alone
+    STATE.analysisTypes = [t];
     renderMain();
     return;
   }

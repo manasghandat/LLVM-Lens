@@ -147,10 +147,11 @@ ui:                     # what the report opens on
   flow-both-lanes: true
 ```
 
-`analysis` is a list, so the report can open on several graphs at once, and the
-chips in the Graphs pane toggle independently. `all` is shorthand for the six
-per-function graphs; the call graph (`cg`) is module-wide, so it stays opt-in.
-Names are put back into the chip row's order whatever order they are written in.
+`analysis` is a list, so the report can open on several graphs at once, stacked
+in the pane. Clicking a name in the Graphs pane then focuses that one graph on
+its own. `all` is shorthand for the six per-function graphs; the call graph
+(`cg`) is module-wide, so it stays opt-in. Names are put back into the chip
+row's order whatever order they are written in.
 
 A flag always beats the file. The repeatable flags — `--load-pass-plugin`,
 `--load`, `--custom-pass`, and `--clang-arg` / `--opt-arg` / `--llc-arg` —

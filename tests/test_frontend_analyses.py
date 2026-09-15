@@ -1,4 +1,4 @@
-"""The Graphs pane: several analysis graphs selected at once."""
+"""The Graphs pane: several graphs from the file, one at a time after a click."""
 
 from __future__ import annotations
 
@@ -122,11 +122,12 @@ def test_graphs_pane_renders_a_selection():
     assert "passed" in result.stdout
 
 
-def test_the_analysis_chips_toggle_rather_than_replace():
-    """A toggle, not a selection: graphs are meant to be read side by side."""
+def test_the_analysis_chips_replace_rather_than_toggle():
+    """A click focuses one graph; opening on several is the file's doing."""
     app = (FRONTEND / "app.js").read_text()
     assert ".ptab[data-analysis]" in app
-    assert "STATE.analysisTypes = STATE.analysisTypes.includes(t)" in app
+    assert "STATE.analysisTypes = [t]" in app
+    assert "STATE.analysisTypes.includes(t)" not in app, "the toggle is gone"
 
 
 def test_the_chip_list_has_one_source_of_truth():
