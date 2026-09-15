@@ -9,8 +9,9 @@ from pathlib import Path
 from llvm_lens.diff import FnChange
 from llvm_lens.emit import ReportPass, emit_report
 from llvm_lens.report import (
-    BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _effective_pipeline,
-    build_commands, build_input_pass, build_lane_a, build_lane_b, build_report,
+    BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _build_ir_tree,
+    _effective_pipeline, build_commands, build_input_pass, build_lane_a,
+    build_lane_b, build_report,
 )
 from llvm_lens.parsers.print_changed import split_module_functions, strip_module_noise
 from llvm_lens.sourcemap import SourceRef
@@ -287,6 +288,61 @@ def test_build_lane_a_fill_follows_a_module_pass_deleting_a_function():
     assert list(dce.functions) == ["[module]", "b"]  # "a" is gone as of this card
     later = next(p for p in passes if p.name == "InstCombinePass")
     assert list(later.functions) == ["b"]
+
+
+def test_a_passes_time_hangs_off_its_first_card():
+    """-time-passes measures a pass over the lane, not one run of it."""
+    stderr = (
+        "Running pass: InstCombinePass on main\n"
+        "*** IR Dump After InstCombinePass on main ***\n"
+        "define i32 @main() {\n  ret i32 1\n}\n"
+        "Running pass: InstCombinePass on main\n"
+        "*** IR Dump After InstCombinePass on main ***\n"
+        "define i32 @main() {\n  ret i32 2\n}\n"
+        "===-------------------------------------------------------------------------===\n"
+        "                      Pass execution timing report\n"
+        "===-------------------------------------------------------------------------===\n"
+        "  Total Execution Time: 0.0100 seconds (0.0100 wall clock)\n"
+        "\n"
+        "   ---User Time---   --System Time--   --User+System--   ---Wall Time---  --- Name ---\n"
+        "   0.0100 (100.0%)   0.0000 (  0.0%)   0.0100 (100.0%)   0.0100 (100.0%)  InstCombinePass\n"
+        "   0.0100 (100.0%)   0.0000 (  0.0%)   0.0100 (100.0%)   0.0100 (100.0%)  Total\n"
+    )
+    passes = build_lane_a(stderr)
+    assert [p.name for p in passes] == ["InstCombinePass", "InstCombinePass"]
+    # The one number the table holds is the pass's, and it is stated once.
+    assert passes[0].time_ms == 10.0
+    assert passes[1].time_ms is None
+
+
+def _leaves(node: dict) -> list[dict]:
+    if node.get("passId") is not None:
+        return [node]
+    out: list[dict] = []
+    for child in node.get("children", []):
+        out += _leaves(child)
+    return out
+
+
+def test_the_structure_tree_gives_every_card_a_leaf():
+    """A repeat run is a card like any other, so the tree must reach it too."""
+    def card(pid: int, index: int, scope: str) -> ReportPass:
+        return ReportPass(
+            id=pid, lane="ir", name="LoopRotatePass", pass_id="LoopRotatePass",
+            run_index=index, time_ms=1.5 if index == 1 else None,
+            changed=True, scope=scope,
+        )
+
+    tree = _build_ir_tree([
+        ReportPass(id=1, lane="ir", name="Input IR", pass_id=None, run_index=0,
+                   time_ms=None, changed=True, is_input=True),
+        card(2, 1, "loop"), card(3, 2, "loop"), card(4, 3, "function"),
+    ])
+    leaves = _leaves(tree)
+    assert {leaf["passId"] for leaf in leaves} == {2, 3, 4}  # the input card has none
+    assert [leaf["name"] for leaf in leaves] == ["LoopRotatePass"] * 3
+    scopes = {s["name"]: [leaf["passId"] for leaf in s["children"]] for s in tree["children"]}
+    assert scopes == {"Function": [4], "Loop": [2, 3]}  # card order inside a scope
 
 
 def test_build_lane_a_folds_single_function_scc_dumps_into_the_function():

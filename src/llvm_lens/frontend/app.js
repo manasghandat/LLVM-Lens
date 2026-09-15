@@ -1036,7 +1036,8 @@ function pipelineTreeHtml() {
   const manifest = CURRENT_MANIFEST || { metadata: {}, passes: [] };
   const tree = manifest.metadata.pipelineTree;
   const summariesById = new Map(manifest.passes.map(p => [p.id, p]));
-  const totalPasses = manifest.passes.length;
+  // What the tree can hold, so "shown" can only be short of it by the filter.
+  const totalPasses = manifest.passes.filter(p => !p.isInput).length;
   if (!tree || (!tree.ir && !tree.mir)) {
     return pane("STRUCTURE", "", "",
       '<div class="cfg-empty">(no no structure captured)</div>');
@@ -1890,6 +1891,8 @@ function pipeNodeLabel(n, charW, maxLabelW) {
 
 function pipeBar(n, kind, ctx) {
   const w = 120, h = PIPE_BAR_H;
+  // A span's bar is its share of its own lane, not of every lane drawn.
+  const laneMs = (ctx.laneTotals && ctx.laneTotals[n.lane]) || ctx.laneTotalMs;
   let segs = [];
   if (kind === "pass" && ctx.maxChurn > 0 && pipeChurn(n) > 0) {
     const scale = w / ctx.maxChurn;
@@ -1897,8 +1900,8 @@ function pipeBar(n, kind, ctx) {
       { w: Math.max(1, Math.round(n.removed * scale)), c: PIPE_COLORS.del },
       { w: Math.max(1, Math.round(n.added * scale)), c: PIPE_COLORS.add },
     ];
-  } else if (kind === "agg" && n.timeMs && ctx.laneTotalMs > 0) {
-    segs = [{ w: Math.max(2, Math.round(n.timeMs / ctx.laneTotalMs * w)), c: PIPE_COLORS.trace }];
+  } else if (kind === "agg" && n.timeMs && laneMs > 0) {
+    segs = [{ w: Math.max(2, Math.round(n.timeMs / laneMs * w)), c: PIPE_COLORS.trace }];
   }
   const used = segs.reduce((s, x) => s + x.w, 0);
   // Set in from both ends, so either pinning edge clears that corner's curve.
@@ -1936,9 +1939,11 @@ function pipeGraphSpec(manifest, opts) {
   const all = [];
   for (const l of lanes) all.push(...parts[l].nodes);
 
-  const laneTotalMs = lanes.reduce((s, l) => s + parts[l].stats.laneTotalMs, 0);
+  const laneTotals = {};
+  for (const l of lanes) laneTotals[l] = parts[l].stats.laneTotalMs;
+  const laneTotalMs = lanes.reduce((s, l) => s + laneTotals[l], 0);
   const maxChurn = Math.max(1, ...all.map(n => pipeChurn(n)));
-  const ctx = { laneTotalMs, maxChurn };
+  const ctx = { laneTotalMs, laneTotals, maxChurn };
 
   const cells = pipeCells(all, expanded);
   const legend = pipeLayout(cells, opts);

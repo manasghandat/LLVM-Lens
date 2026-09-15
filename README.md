@@ -279,7 +279,9 @@ walks that whole stream to produce the per-line lineage, so a card is one pass
 *run*, not one pass name: a pass that ran ten times and changed something ten
 times gets ten cards. That is what lets the Diff view show one pass's work and
 nothing else, and lets every name in a blame chain land on a card showing
-exactly the state it names.
+exactly the state it names. `-time-passes` measures a pass over the whole lane
+rather than any one run of it, so that number is stated once, on the pass's
+first card.
 
 ## Development
 

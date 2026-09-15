@@ -163,6 +163,10 @@ def lane_a_passes(
 
     summary_ms = _summary_times_ms(time_blocks)
     anchor_ms = _attribute_time_ms(time_blocks, [slot.run.line for slot in slots])
+    # -time-passes measures a pass over the whole lane, never one run of it, so
+    # its total hangs off the pass's first card. Repeating it on each card would
+    # count the same milliseconds once per run wherever they are added up.
+    timed: set[str] = set()
 
     passes: list[ReportPass] = []
     # Last CFG drawn for each entity; the DOT is a pure function of the text.
@@ -176,6 +180,10 @@ def lane_a_passes(
     for index, slot in enumerate(slots):
         run_index = slot.run_index
         dumped = slot.dumps[-1] if slot.dumps else None
+        time_ms = None
+        if slot.name not in timed:
+            timed.add(slot.name)
+            time_ms = summary_ms.get(slot.name, anchor_ms.get(run_index - 1))
         # The module row is the whole-module overview, and only the passes that
         # ran on the module get one. Such a dump is also authoritative about
         # what the module holds.
@@ -230,7 +238,7 @@ def lane_a_passes(
             dots=dots,
             analyses=analyses.get(slot.run.index, {"run": [], "cached": [], "invalidated": []}),
             log=_pass_log(stderr, slot.run.line, end_line),
-            time_ms=summary_ms.get(slot.name, anchor_ms.get(run_index - 1)),
+            time_ms=time_ms,
             is_custom=_is_custom(slot.name, custom_passes),
             src_maps=src_maps,
             scope=scope_of(slot.run.function),
@@ -283,7 +291,11 @@ def _node(name: str, kind: str, *, depth: int = 0) -> dict[str, object]:
 
 
 def _build_ir_tree(passes: list[ReportPass]) -> dict[str, object]:
-    """Synthesize the new-PM pass-manager tree from each pass's scope."""
+    """Synthesize the new-PM pass-manager tree from each pass's scope.
+
+    One leaf per card, a pass that ran again included: the tree is a way into
+    the cards, and a card it leaves out is a card with no way in from here.
+    """
     root = _node("__root__", "root")
     sections = {
         "module": _node("Module", "group", depth=1),
@@ -293,11 +305,9 @@ def _build_ir_tree(passes: list[ReportPass]) -> dict[str, object]:
     }
     have = {k: False for k in sections}
 
-    seen: set[str] = set()
     for pass_ in passes:
-        if pass_.is_input or pass_.name in seen:
-            continue  # a pass that runs again is one node in the pipeline's shape
-        seen.add(pass_.name)
+        if pass_.is_input:
+            continue
         scope = pass_.scope or "function"
         if scope not in sections:
             scope = "function"
