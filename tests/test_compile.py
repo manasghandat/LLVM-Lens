@@ -17,12 +17,13 @@ def test_compile_c_to_ir(toolchain, tmp_path):
     result = compile_to_ir(SAMPLE_C, out_dir=tmp_path, toolchain=toolchain,
                            extra_args=("-DNDEBUG",))
     assert result.kind == "clang"
-    assert result.ir_path == tmp_path / "sample.ll"
+    # The output name follows the source's stem, whatever the sample is called.
+    assert result.ir_path == tmp_path / f"{SAMPLE_C.stem}.ll"
     assert list(result.cmd) == [
         str(toolchain.clang.path), "-S", "-emit-llvm", "-O0",
         "-Xclang", "-disable-O0-optnone",
         "-g", "-DNDEBUG",
-        "-o", str(tmp_path / "sample.ll"), str(SAMPLE_C),
+        "-o", str(tmp_path / f"{SAMPLE_C.stem}.ll"), str(SAMPLE_C),
     ]
     assert "clang" in result.toolchain.clang.version
     text = result.ir_path.read_text()

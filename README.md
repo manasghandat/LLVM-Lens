@@ -57,11 +57,33 @@ python -m llvm_lens sample.c -o report
 ```
 
 Then open `report/index.html`, or pass `--open` to launch it in your default
-browser automatically:
+browser automatically.
+
+If you have no C file to hand, the package ships five of its own — so you can see
+a report without naming a path at all:
 
 ```sh
-llvm-lens sample.c --open
+llvm-lens --sample --open                             # side-channel, the default
+llvm-lens --sample register-pressure                  # 16 live lanes: spills and reloads
+llvm-lens --sample vectorize  --passes 'default<O0>'  # a loop that widens, one that cannot, with O0
+llvm-lens --sample switch-lowering                    # jump table vs. comparison tree
+llvm-lens --sample licm                               # what the loop hoists, and what it cannot
 ```
+
+[`examples/README.md`](examples/README.md) says what each one is for.
+
+A few of the other flags, on a file of your own:
+
+```sh
+llvm-lens sample.c --passes 'mem2reg'          # Lane A is just that one pass
+llvm-lens sample.c -o /tmp/lens                # somewhere other than ./report
+llvm-lens demo.ll --target aarch64-linux-gnu   # another machine's Machine IR
+llvm-lens demo.ll --load-pass-plugin ./libMBAAdd.so --custom-pass mba-add
+llvm-lens sample.c --no-ai                     # drop the AI key before sharing
+```
+
+`--passes` takes any new-pass-manager pipeline, `function(mem2reg,gvn)` included,
+so you can decide how much of the pipeline the report covers.
 
 Run `llvm-lens --help` for every option.
 
@@ -177,7 +199,7 @@ llvm-lens demo.ll \
 Target a specific LLVM install:
 
 ```sh
-LLVM_LENS_BIN_DIR=/usr/lib/llvm-22/bin llvm-lens sample.c
+LLVM_LENS_BIN_DIR=/usr/lib/llvm-22/bin llvm-lens --sample
 ```
 
 ### Ask AI

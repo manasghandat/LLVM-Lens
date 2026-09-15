@@ -591,7 +591,7 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     assert not summary["llcCrashed"]
 
     manifest = json.loads(Path(summary["manifest"]).read_text())
-    assert manifest["metadata"]["source"].endswith("sample.c")
+    assert manifest["metadata"]["source"].endswith(SAMPLE_C.name)
     assert manifest["metadata"]["pipeline"] == "mem2reg"
     assert manifest["metadata"]["toolVersions"]["opt"].startswith("Ubuntu LLVM version 22")
     assert {p["lane"] for p in manifest["passes"]} == {"ir", "mir"}
@@ -628,6 +628,6 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     # Every stage's exact argv travels with the report.
     commands = manifest["metadata"]["commands"]
     assert [c["stage"] for c in commands] == ["compile", "opt", "llc"]
-    assert commands[0]["argv"][-1].endswith("sample.c")
+    assert commands[0]["argv"][-1].endswith(SAMPLE_C.name)
     assert "-passes=mem2reg" in commands[1]["argv"]
     assert "-print-after-all" in commands[2]["argv"]

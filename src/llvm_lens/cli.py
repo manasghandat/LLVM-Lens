@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import textwrap
 import webbrowser
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import __version__
+from . import __version__, sample
 from .config import (
     DEFAULT_BASE_URLS, DEFAULT_MODELS, PROVIDERS, ConfigError, config_path,
     load_config, save_config,
@@ -27,9 +28,22 @@ DEFAULT_CONFIG_NAME = PROJECT_FILENAMES[0]
 _DASH_NOTE = "Write --opt-arg=-foo when the argument starts with '-'."
 
 
+class _Formatter(argparse.HelpFormatter):
+    """Wrap help text on spaces only: `llvm-lens.yml` and `switch-lowering`
+    are one word each, and splitting them at the hyphen reads as a typo."""
+
+    def _split_lines(self, text: str, width: int) -> list[str]:
+        return textwrap.wrap(text, width, break_on_hyphens=False)
+
+    def _fill_text(self, text: str, width: int, indent: str) -> str:
+        return textwrap.fill(text, width, initial_indent=indent,
+                             subsequent_indent=indent, break_on_hyphens=False)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llvm-lens",
+        formatter_class=_Formatter,
         description=(
             "Analyze LLVM pass pipelines and emit a static HTML report. "
             "Accepts .c/.cpp (compiled with clang), .ll, and .bc sources. "
@@ -64,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help=f"Write a commented starter settings file (default: "
              f"{DEFAULT_CONFIG_NAME}) and exit. Never overwrites.",
+    )
+    parser.add_argument(
+        "--sample", nargs="?", const=sample.DEFAULT, default=None,
+        choices=sample.available(), metavar="NAME",
+        help=f"Build a report for one of the bundled example sources "
+             f"({', '.join(sample.available())}; default: {sample.DEFAULT}) "
+             "instead of naming a file.  Reads no settings file.",
     )
     parser.add_argument(
         "--passes", default=None,
@@ -138,7 +159,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def read_settings(args: argparse.Namespace) -> Settings:
     """The config file's settings. Raise SystemExit on a file we cannot use."""
-    if args.no_config:
+    # A sample is a demo of the built-in defaults: a stray llvm-lens.yml three
+    # directories up must not be able to break it.
+    if args.no_config or args.sample is not None:
         return Settings()
     try:
         return load_settings(args.config)
@@ -170,6 +193,7 @@ def apply_flags(settings: Settings, args: argparse.Namespace) -> Settings:
 def build_configure_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llvm-lens configure-ai",
+        formatter_class=_Formatter,
         description=(
             "Store the AI provider and API key used by the report's \"ask AI\" "
             f"panel. Written to {config_path()} (0600) and copied into each "
@@ -326,16 +350,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_init_config(args.init_config)
     if args.config and args.no_config:
         parser.error("--config and --no-config are mutually exclusive")
-    if args.source is None:
+    if args.sample is not None:
+        if args.source is not None:
+            parser.error("source and --sample are mutually exclusive")
+        if args.config:
+            # Silently dropping a file the user named is worse than saying so.
+            parser.error("--config and --sample are mutually exclusive")
+        source = sample.path(args.sample)
+        if not source.is_file():
+            parser.error(
+                f"argument --sample: {args.sample!r} is missing from this install "
+                f"(looked in {sample.directory()})"
+            )
+    elif args.source is None:
         parser.error("the following arguments are required: source")
-
-    source = Path(args.source)
-    if not source.is_file():
-        parser.error(f"argument source: {args.source!r} is not an existing file")
+    else:
+        source = Path(args.source)
+        if not source.is_file():
+            parser.error(f"argument source: {args.source!r} is not an existing file")
 
     settings = apply_flags(read_settings(args), args)
     if settings.config_file:
         print(f"config:     {settings.config_file}")
+    if args.sample is not None:
+        print(f"sample:     {args.sample}")
 
     try:
         summary = build_report(

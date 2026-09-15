@@ -46,8 +46,10 @@ where = ["src"]
 llvm_lens = [
     "frontend/index.html",
     "frontend/app.js",
+    "frontend/ai.js",
     "frontend/style.css",
     "frontend/vendor/*.js",
+    "samples/*.c",
 ]
 
 [tool.pytest.ini_options]

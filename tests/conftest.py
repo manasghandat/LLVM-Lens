@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 from llvm_lens import config as config_mod
+from llvm_lens import sample as sample_mod
 from llvm_lens import settings as settings_mod
 from llvm_lens.compile import compile_to_ir
 from llvm_lens.toolchain import ToolchainError, discover_toolchain
 
-SAMPLE_C = Path(__file__).resolve().parent.parent / "examples" / "side-channel" / "sample.c"
+# The same resolution `--sample` uses, so the tests cover the shipped path.
+SAMPLE_C = sample_mod.path(sample_mod.DEFAULT)
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
