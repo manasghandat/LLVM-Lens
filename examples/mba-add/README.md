@@ -19,6 +19,17 @@ This produces `libMBAAdd.so`.
 
 ## Run through LLVM-Lens
 
+The flags this example needs are already written down in
+[`llvm-lens.yml`](llvm-lens.yml), which LLVM-Lens finds by walking up from the
+working directory — so from this directory it is just:
+
+```sh
+cd examples/mba-add
+llvm-lens demo.ll --open
+```
+
+That file is the same as spelling the flags out by hand:
+
 ```sh
 LLVM_LENS_BIN_DIR=/usr/lib/llvm-22/bin \
 llvm-lens examples/mba-add/demo.ll \
@@ -27,7 +38,11 @@ llvm-lens examples/mba-add/demo.ll \
   --custom-pass mba-add
 ```
 
-Then open `/tmp/mba-report/index.html`. The `MBAAdd` card appears in the IR lane
+Note that the hand-written form must run from the repository root, where the
+walk up finds no `llvm-lens.yml`, while the short form must run from *this*
+directory. A flag always beats the file, so either way you can override it.
+
+Then open `report/index.html`. The `MBAAdd` card appears in the IR lane
 with a `custom` badge; its diff pane shows each 8-bit `add` replaced by the MBA
 expression, and the CFG pane renders the rewritten functions.
 
@@ -36,6 +51,7 @@ Notes:
 - `demo.ll` is plain LLVM IR because C sources promote 8-bit arithmetic to
   `i32`, which `MBAAdd` (correctly) leaves alone.
 - The `.so` path must be absolute (or resolvable by `dlopen`) — a bare filename
-  is not searched on the loader path.
+  is not searched on the loader path. `llvm-lens.yml` handles this by resolving
+  its `plugins.pass` entries against its own directory.
 - `--custom-pass` appends the pass as `function(<name>)`, so it runs after the
   default `default<O2>` module pipeline.

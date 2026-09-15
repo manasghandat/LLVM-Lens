@@ -9,6 +9,7 @@ description = "Analyze LLVM opt/llc pass pipelines and emit a static HTML report
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "GPL-3.0-only" }
+dependencies = ["pyyaml>=6"]
 authors = [{ name = "0xn4utilus", email = "gyanendrabanjare8@gmail.com" }]
 keywords = ["llvm", "pass", "compiler", "opt", "llc", "mir", "ir"]
 classifiers = [
