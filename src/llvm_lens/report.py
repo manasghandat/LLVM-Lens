@@ -19,7 +19,7 @@ from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
 from .config import load_config
 from .diff import FnChange
-from .emit import MODULE_FN, ReportPass, emit_report
+from .emit import MODULE_FN, ReportPass, RunSegment, emit_report
 from .asm import correlate_asm
 from .isel import correlate
 from .parsers.debug_pass_manager import parse_pass_runs
@@ -177,68 +177,87 @@ def lane_a_passes(
     known_fns: list[str] = []
     if input_ir is not None:
         known_fns = list(split_module_functions(input_ir))
-    line_count = len(stderr.splitlines()) + 1
 
     for index, slot in enumerate(slots):
-        run_index = slot.run_index
-        dumped = slot.dumps[-1] if slot.dumps else None
         time_ms = None
         if slot.name not in timed:
             timed.add(slot.name)
-            time_ms = summary_ms.get(slot.name, anchor_ms.get(run_index - 1))
-        # The module row is the whole-module overview, and only the passes that
-        # ran on the module get one. Such a dump is also authoritative about
-        # what the module holds.
-        named_module = dumped is not None and canonical_fn(dumped.function) == MODULE_FN
-        if named_module:
-            known_fns = list(split_module_functions(dumped.ir))
+            time_ms = summary_ms.get(slot.name, anchor_ms.get(index))
 
-        # Module, then functions in module order, then loop/SCC entities.
-        listed = [MODULE_FN] if named_module else []
-        listed += [fn for fn in known_fns if fn != MODULE_FN]
-        listed += [fn for fn in sorted(timeline.changed_at(run_index))
-                   if fn != MODULE_FN and fn not in listed]
-
+        # One card per pass, so its rows carry every run it made. What the card
+        # leaves behind is the last run's state, which is what its CFG shows.
+        segments: list[RunSegment] = []
         fn_changes: dict[str, FnChange] = {}
         src_maps: dict[str, LineMap] = {}
-        for fn in listed:
-            after = timeline.at(fn, run_index)
-            if after:
-                # The state before this card is the state this one replaced.
-                fn_changes[fn] = FnChange(fn, timeline.at(fn, run_index - 1), after)
-        if dumped is not None and mapped and dumped.metadata:
-            table = parse_debug_table(dumped.metadata)
-            entity = canonical_fn(dumped.function)
-            if table and entity in fn_changes:
-                src_maps[entity] = map_lines(fn_changes[entity].after, table)
-
         dots: dict[str, tuple[str | None, str | None]] = {}
-        for fn, change in fn_changes.items():
-            if fn == MODULE_FN:
-                continue  # the module row is a whole-module diff, not a CFG
-            dots[fn] = (
-                prev_dots.get(fn),
-                ir_cfg_dot(change.after, fn) if change.changed else prev_dots.get(fn),
-            )
-            prev_dots[fn] = dots[fn][1]
+        changed = False
+        for state in slot.runs:
+            run_index = state.run.index
+            dumped = state.dumps[-1] if state.dumps else None
+            # The module row is the whole-module overview, and only the passes
+            # that ran on the module get one. Such a dump is also authoritative
+            # about what the module holds.
+            named_module = dumped is not None and canonical_fn(dumped.function) == MODULE_FN
+            if named_module:
+                known_fns = list(split_module_functions(dumped.ir))
 
-        if dumped is not None:
-            # Extend after the fill so a multi-function SCC is not listed twice.
-            known_fns.extend(
-                fn for fn in split_module_functions(dumped.ir) if fn not in known_fns
-            )
+            # Module, then functions in module order, then loop/SCC entities.
+            listed = [MODULE_FN] if named_module else []
+            listed += [fn for fn in known_fns if fn != MODULE_FN]
+            listed += [fn for fn in sorted(timeline.changed_at(run_index))
+                       if fn != MODULE_FN and fn not in listed]
 
-        end_line = slots[index + 1].run.line if index + 1 < len(slots) else line_count
+            run_changes: dict[str, FnChange] = {}
+            for fn in listed:
+                after = timeline.at(fn, run_index)
+                if after:
+                    # The state before this run is the state this one replaced.
+                    run_changes[fn] = FnChange(fn, timeline.at(fn, run_index - 1), after)
+            if dumped is not None and mapped and dumped.metadata:
+                table = parse_debug_table(dumped.metadata)
+                entity = canonical_fn(dumped.function)
+                if table and entity in run_changes:
+                    src_maps[entity] = map_lines(run_changes[entity].after, table)
+
+            run_dots: dict[str, tuple[str | None, str | None]] = {}
+            for fn, change in run_changes.items():
+                if fn == MODULE_FN:
+                    continue  # the module row is a whole-module diff, not a CFG
+                run_dots[fn] = (
+                    prev_dots.get(fn),
+                    ir_cfg_dot(change.after, fn) if change.changed else prev_dots.get(fn),
+                )
+                prev_dots[fn] = run_dots[fn][1]
+
+            if dumped is not None:
+                # Extend after the fill so a multi-function SCC is not listed twice.
+                known_fns.extend(
+                    fn for fn in split_module_functions(dumped.ir) if fn not in known_fns
+                )
+
+            changed = changed or any(c.changed for c in run_changes.values())
+            if dumped is not None:
+                segments.append(RunSegment(run_index, run_changes))
+            fn_changes, dots = run_changes, run_dots
+
+        analysed: dict[str, list[str]] = {"run": [], "cached": [], "invalidated": []}
+        for state in slot.runs:
+            for key, values in analyses.get(state.run.index, {}).items():
+                analysed.setdefault(key, []).extend(values)
+
+        last = slot.runs[-1]
+        end_line = last.dumps[-1].line if last.dumps else last.run.line
         passes.append(ReportPass(
             id=0,  # assigned by build_report
             lane="ir",
             name=slot.name,
             pass_id=slot.name,
-            run_index=run_index,
-            changed=any(c.changed for c in fn_changes.values()),
+            run_index=slot.run_index,
+            changed=changed,
             functions=fn_changes,
             dots=dots,
-            analyses=analyses.get(slot.run.index, {"run": [], "cached": [], "invalidated": []}),
+            runs=segments,
+            analyses=analysed,
             log=_pass_log(stderr, slot.run.line, end_line),
             time_ms=time_ms,
             is_custom=_is_custom(slot.name, custom_passes),

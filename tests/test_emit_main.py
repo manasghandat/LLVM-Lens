@@ -309,10 +309,10 @@ def test_a_passes_time_hangs_off_its_first_card():
         "   0.0100 (100.0%)   0.0000 (  0.0%)   0.0100 (100.0%)   0.0100 (100.0%)  Total\n"
     )
     passes = build_lane_a(stderr)
-    assert [p.name for p in passes] == ["InstCombinePass", "InstCombinePass"]
-    # The one number the table holds is the pass's, and it is stated once.
+    assert [p.name for p in passes] == ["InstCombinePass"]
+    assert [r.run_index for r in passes[0].runs] == [1, 2]
+    # The one number the table holds is the whole lane's, and it is stated once.
     assert passes[0].time_ms == 10.0
-    assert passes[1].time_ms is None
 
 
 def _leaves(node: dict) -> list[dict]:

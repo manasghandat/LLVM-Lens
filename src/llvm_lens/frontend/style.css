@@ -201,6 +201,20 @@ body.rail-collapsed .rail-edge { display: none; }
 .ptab.active { color: var(--trace); background: var(--trace-bg); font-weight: 600; }
 .ptab.off { opacity: 0.5; }
 
+/* run picker: a repeated pass's diff pane reads one run at a time */
+.runpick { display: flex; align-items: center; gap: 5px; flex: none;
+  border: 1px solid var(--line-strong); border-radius: var(--r);
+  padding: 0 6px 0 2px; }
+.runpick .rl { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--faint); }
+/* The caret is drawn, because `appearance: none` takes the native one away. */
+select.ptab { appearance: none; color: var(--trace); font-weight: 600;
+  padding: 2px 13px 2px 4px; cursor: pointer; font-variant-numeric: tabular-nums;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M0 0h8L4 5z' fill='%238b939e'/%3E%3C/svg%3E")
+    no-repeat right 4px center / 7px 4px; }
+select.ptab option { background: var(--panel); color: var(--ink); }
+select.ptab:focus-visible { outline: 1px solid var(--trace); outline-offset: 1px; }
+
 .list { overflow-y: auto; flex: 1; min-height: 0; }
 
 /* list rows: pass list and function list */

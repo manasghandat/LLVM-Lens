@@ -136,7 +136,13 @@ const bad = [], missing = [];
 let checked = 0;
 for (const lane of ["ir", "mir"]) {
   let doc; try { doc = rd(`data/blame-${lane}.json`); } catch { continue; }
-  const byRun = new Map(manifest.passes.filter(p => p.lane === lane).map(p => [p.runIndex, p]));
+  // A card covers many runs of one pass, so index every run it answers for.
+  const byRun = new Map();
+  for (const p of manifest.passes) {
+    if (p.lane !== lane) continue;
+    for (const r of p.runs) byRun.set(r, p);
+  }
+  const blobs = new Map();
   for (const [fn, entry] of Object.entries(doc.functions)) {
     // A line was written at a state iff its chain ends on that state's run.
     const wrote = entry.states.map(s => s.h.filter(id => {
@@ -146,7 +152,12 @@ for (const lane of ["ir", "mir"]) {
     for (let k = 1; k < entry.states.length; k++) {
       const run = entry.states[k].run;
       const card = byRun.get(run);
-      const ch = card && (rd(`data/pass-${card.id}.json`).functions || {})[fn];
+      if (!card) { missing.push(`${lane}/${fn}@${run} (no card)`); continue; }
+      let blob = blobs.get(card.id);
+      if (blob === undefined) { blob = rd(`data/pass-${card.id}.json`); blobs.set(card.id, blob); }
+      // The card's own diff is its last run's, so a run reads its own segment.
+      const seg = blob.runs && blob.runs.find(r => r.runIndex === run);
+      const ch = ((blob.runs ? seg && seg.functions : blob.functions) || {})[fn];
       if (!ch) { missing.push(`${lane}/${fn}@${run}`); continue; }
       const adds = diffOps(ch.before, ch.after).filter(o => o.op === "+").length;
       checked++;
