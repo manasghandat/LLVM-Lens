@@ -572,23 +572,13 @@ function cardRun() {
   if (runs.some(r => r.runIndex === STATE.run)) return STATE.run;
   return runs[runs.length - 1].runIndex;
 }
-// Only the run a card leaves behind has a graph and a source map to show.
-function onLastRun() {
-  const runs = (CURRENT_PASS || {}).runs;
-  return !runs || !runs.length || cardRun() === runs[runs.length - 1].runIndex;
-}
 function fnChange(fn) {
   if (!CURRENT_PASS) return null;
   const runs = CURRENT_PASS.runs;
   if (!runs || !runs.length) return CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
   const on = cardRun();
   const seg = runs.find(r => r.runIndex === on) || runs[runs.length - 1];
-  const ch = seg.functions[fn];
-  if (!ch) return CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
-  const card = onLastRun() && CURRENT_PASS.functions[fn];
-  if (!card) return ch;
-  return { before: ch.before, after: ch.after, changed: ch.changed,
-           dotBefore: card.dotBefore, dotAfter: card.dotAfter, srcAfter: card.srcAfter };
+  return seg.functions[fn] || (CURRENT_PASS.functions && CURRENT_PASS.functions[fn]);
 }
 // The runs that did change a function, so an empty diff can name them.
 function runsTouching(fn) {
@@ -831,12 +821,8 @@ function cfgPaneHtml() {
   if (dotAfter) srcs.push("after");
   if (dotBefore && dotAfter) srcs.push("both");
   if (!srcs.length) {
-    const why = CURRENT_PASS && CURRENT_PASS.runs && !onLastRun()
-      ? ` — the graph is the card's leaving state, run `
-        + `${CURRENT_PASS.runs[CURRENT_PASS.runs.length - 1].runIndex}`
-      : "";
     return pane("CFG", "", "", '<div class="cfg-empty">(no CFG data'
-      + (STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : "") + why + ")</div>");
+      + (STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : "") + ")</div>");
   }
   if (!srcs.includes(STATE.cfgSource)) STATE.cfgSource = srcs[srcs.length - 1];
   const chips = srcs.map(s =>
@@ -993,11 +979,7 @@ function srcPaneHtml() {
   const map = srcMap.filter((r, i) => keep[i]);
   const tally = srcFileTally(map);
   if (!tally.length) {
-    const why = CURRENT_PASS && CURRENT_PASS.runs && !onLastRun()
-      ? ` — the map is the card's leaving state, run `
-        + `${CURRENT_PASS.runs[CURRENT_PASS.runs.length - 1].runIndex}`
-      : "";
-    return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass${why})`);
+    return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass)`);
   }
   let index = files.findIndex(f => f.path === STATE.srcFile);
   if (index < 0 || !tally.some(([i]) => i === index)) index = tally[0][0];

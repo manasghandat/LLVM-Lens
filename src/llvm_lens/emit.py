@@ -52,10 +52,12 @@ def _stamp_assets(report_dir: Path) -> None:
 
 @dataclass
 class RunSegment:
-    """One run of a pass, as the diff view shows it on its own."""
+    """One run of a pass, whole: what it changed, and the state it left."""
 
     run_index: int
     functions: dict[str, FnChange] = field(default_factory=dict)
+    dots: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    src_maps: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -91,23 +93,34 @@ class ReportPass:
     scope: str | None = None
 
 
-def _pass_json(pass_: ReportPass) -> dict[str, Any]:
-    functions: dict[str, Any] = {}
-    for fn, change in pass_.functions.items():
-        functions[fn] = {
+def _functions_json(
+    changes: dict[str, FnChange],
+    dots: dict[str, tuple[str | None, str | None]],
+    src_maps: dict[str, list[Any]],
+) -> dict[str, Any]:
+    """One set of changes as the frontend reads it: text, graph, source map."""
+    out: dict[str, Any] = {}
+    for fn, change in changes.items():
+        entry: dict[str, Any] = {
             "before": change.before,
             "after": change.after,
             "changed": change.changed,
         }
-        dot_before, dot_after = pass_.dots.get(fn, (None, None))
+        dot_before, dot_after = dots.get(fn, (None, None))
         if dot_before:
-            functions[fn]["dotBefore"] = dot_before
+            entry["dotBefore"] = dot_before
         if dot_after:
-            functions[fn]["dotAfter"] = dot_after
+            entry["dotAfter"] = dot_after
         # Omit all-None maps to avoid a full-length null array per pass.
-        src_after = pass_.src_maps.get(fn)
+        src_after = src_maps.get(fn)
         if src_after and any(src_after):
-            functions[fn]["srcAfter"] = src_after
+            entry["srcAfter"] = src_after
+        out[fn] = entry
+    return out
+
+
+def _pass_json(pass_: ReportPass) -> dict[str, Any]:
+    functions = _functions_json(pass_.functions, pass_.dots, pass_.src_maps)
 
     entry: dict[str, Any] = {
         "id": pass_.id,
@@ -124,10 +137,8 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
     }
     if len(pass_.runs) > 1:
         entry["runs"] = [
-            {"runIndex": run.run_index, "functions": {
-                fn: {"before": c.before, "after": c.after, "changed": c.changed}
-                for fn, c in run.functions.items()
-            }}
+            {"runIndex": run.run_index,
+             "functions": _functions_json(run.functions, run.dots, run.src_maps)}
             for run in pass_.runs
         ]
     if pass_.lane == "mir":
