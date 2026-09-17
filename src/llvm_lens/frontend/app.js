@@ -512,6 +512,7 @@ let STATE = {
   splitRatio: 0.5,           // first pane share of the split area
   lastMode: "diff",          // last overview detail mode — restored when drilling in
   pipeBoth: true,            // Flow: draw both lanes, or just the selected one
+  run: null,                 // IR lane: which run of a repeated pass is shown
 };
 let CURRENT_MANIFEST = null;   // manifest.json
 let CURRENT_PASS = null;       // loaded chunk for STATE.passId
@@ -562,8 +563,48 @@ function fnNames() {
   const s = currentPassSummary();
   return (s && s.functions) || [];
 }
+// A card is one pass, but a pass in the middle end runs many times. The panes
+// show one run of it; `runs` is absent when it ran once.
+// Opens on the card's last run, whose state every other pane describes.
+function cardRun() {
+  const runs = CURRENT_PASS && CURRENT_PASS.runs;
+  if (!runs || !runs.length) return null;
+  if (runs.some(r => r.runIndex === STATE.run)) return STATE.run;
+  return runs[runs.length - 1].runIndex;
+}
+// Only the run a card leaves behind has a graph and a source map to show.
+function onLastRun() {
+  const runs = (CURRENT_PASS || {}).runs;
+  return !runs || !runs.length || cardRun() === runs[runs.length - 1].runIndex;
+}
 function fnChange(fn) {
-  return CURRENT_PASS && CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
+  if (!CURRENT_PASS) return null;
+  const runs = CURRENT_PASS.runs;
+  if (!runs || !runs.length) return CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
+  const on = cardRun();
+  const seg = runs.find(r => r.runIndex === on) || runs[runs.length - 1];
+  const ch = seg.functions[fn];
+  if (!ch) return CURRENT_PASS.functions && CURRENT_PASS.functions[fn];
+  const card = onLastRun() && CURRENT_PASS.functions[fn];
+  if (!card) return ch;
+  return { before: ch.before, after: ch.after, changed: ch.changed,
+           dotBefore: card.dotBefore, dotAfter: card.dotAfter, srcAfter: card.srcAfter };
+}
+// The runs that did change a function, so an empty diff can name them.
+function runsTouching(fn) {
+  return ((CURRENT_PASS || {}).runs || [])
+    .filter(r => (r.functions[fn] || {}).changed).map(r => r.runIndex);
+}
+function runChips() {
+  const runs = (CURRENT_PASS || {}).runs;
+  if (!runs || runs.length < 2) return "";
+  const on = cardRun();
+  const options = runs.map(r => `<option value="${r.runIndex}"`
+    + `${r.runIndex === on ? " selected" : ""}>run ${r.runIndex}</option>`).join("");
+  return `<span class="runpick" title="this pass ran ${runs.length} times; `
+    + `each run is diffed against the one before it">`
+    + `<select class="ptab" id="runPick">${options}</select>`
+    + `<span class="rl">of ${runs.length}</span></span>`;
 }
 function sourceFiles() {
   return ((CURRENT_MANIFEST || {}).metadata || {}).sourceFiles || [];
@@ -644,6 +685,7 @@ async function selectPass(id) {
   STATE.passId = id;
   STATE.fn = null;
   STATE.blameLine = null;
+  STATE.run = null;  // a run picked on the last card means nothing on this one
   CURRENT_PASS = null;
   renderPassList();
   const row = document.querySelector("#passList .row.sel");
@@ -789,8 +831,12 @@ function cfgPaneHtml() {
   if (dotAfter) srcs.push("after");
   if (dotBefore && dotAfter) srcs.push("both");
   if (!srcs.length) {
+    const why = CURRENT_PASS && CURRENT_PASS.runs && !onLastRun()
+      ? ` — the graph is the card's leaving state, run `
+        + `${CURRENT_PASS.runs[CURRENT_PASS.runs.length - 1].runIndex}`
+      : "";
     return pane("CFG", "", "", '<div class="cfg-empty">(no CFG data'
-      + (STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : "") + ")</div>");
+      + (STATE.fn ? ` for ${escapeHtml(STATE.fn)}` : "") + why + ")</div>");
   }
   if (!srcs.includes(STATE.cfgSource)) STATE.cfgSource = srcs[srcs.length - 1];
   const chips = srcs.map(s =>
@@ -856,17 +902,25 @@ function diffPaneHtml() {
   const ch = fnChange(STATE.fn);
   if (!ch) return pane("DIFF", "", "", '<div class="cfg-empty">(select a function)</div>');
   if (!ch.changed) {
-    return pane("DIFF", "", "",
-      `<div class="cfg-empty">(${escapeHtml(STATE.fn)} unchanged — nothing to diff)</div>`);
+    // A repeated pass rarely moves every function on its last run, so say which
+    // runs did — the picker beside this is where to go read one.
+    const touched = runsTouching(STATE.fn);
+    const note = touched.length
+      ? `${escapeHtml(STATE.fn)} is unchanged by run ${cardRun()} — this pass changed it `
+        + `in run${touched.length > 1 ? "s" : ""} ${touched.join(", ")}`
+      : `${escapeHtml(STATE.fn)} unchanged — nothing to diff`;
+    return pane("DIFF", runChips(), "", `<div class="cfg-empty">(${note})</div>`);
   }
   const { ops, del, add } = diffStat(ch.before, ch.after);
   const realOps = ops.filter(o => !dropDebugLine(o.text));
   const full = STATE.diffContext === "full";
   const hunks = diffHunks(realOps, full ? Infinity : DIFF_CONTEXT);
-  const chips = ["hunks", "full"].map(v =>
+  const chips = runChips() + ["hunks", "full"].map(v =>
     `<button class="ptab ${v === STATE.diffContext ? "active" : ""}" data-ctx="${v}">${v}</button>`
   ).join("");
-  const stat = `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`;
+  const run = cardRun();
+  const stat = `<span class="minus">−${del}</span> <span class="plus">+${add}</span> · ${escapeHtml(STATE.fn)}`
+    + (run != null ? ` · run ${run}` : "");
   const fn = escapeHtml(STATE.fn);
   const body = `
     <div class="udiff-wrap">
@@ -939,7 +993,11 @@ function srcPaneHtml() {
   const map = srcMap.filter((r, i) => keep[i]);
   const tally = srcFileTally(map);
   if (!tally.length) {
-    return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass)`);
+    const why = CURRENT_PASS && CURRENT_PASS.runs && !onLastRun()
+      ? ` — the map is the card's leaving state, run `
+        + `${CURRENT_PASS.runs[CURRENT_PASS.runs.length - 1].runIndex}`
+      : "";
+    return empty(`(no mapped lines for ${escapeHtml(STATE.fn)} at this pass${why})`);
   }
   let index = files.findIndex(f => f.path === STATE.srcFile);
   if (index < 0 || !tally.some(([i]) => i === index)) index = tally[0][0];
@@ -2588,6 +2646,14 @@ document.getElementById("splitSide").addEventListener("click", () => {
 });
 document.getElementById("splitStack").addEventListener("click", () => {
   STATE.orientation = "stack";
+  renderMain();
+});
+
+// Which run of a repeated pass to read is picked from a menu, so it reports
+// through `change`; a click on it would read the value before the pick lands.
+document.getElementById("split").addEventListener("change", evt => {
+  if (evt.target.id !== "runPick") return;
+  STATE.run = Number(evt.target.value);
   renderMain();
 });
 

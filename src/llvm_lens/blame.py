@@ -202,13 +202,26 @@ def walk(states: Sequence[tuple[int, str, str]]) -> list[State]:
 
 
 @dataclass(frozen=True)
+class RunState:
+    """One run of a pass, and the dumps it left behind."""
+
+    run: PassRun
+    dumps: tuple[IrSnapshot, ...] = ()
+
+
+@dataclass(frozen=True)
 class Slot:
-    """One card's worth of pipeline: a pass run, and the dump it left behind."""
+    """One card: a pass, and every run of it that left a state."""
 
     run_index: int
     name: str
     run: PassRun
-    dumps: tuple[IrSnapshot, ...] = ()
+    runs: tuple[RunState, ...] = ()
+
+    @property
+    def dumps(self) -> tuple[IrSnapshot, ...]:
+        """The state the card leaves behind: its last run's dump."""
+        return self.runs[-1].dumps if self.runs else ()
 
 
 def dumps_by_run(runs: Sequence[PassRun], dumps: Sequence[IrSnapshot]) -> dict[int, list[IrSnapshot]]:
@@ -230,21 +243,29 @@ def dumps_by_run(runs: Sequence[PassRun], dumps: Sequence[IrSnapshot]) -> dict[i
 
 
 def lane_a_slots(runs: Sequence[PassRun], dumps: Sequence[IrSnapshot]) -> list[Slot]:
-    """The pipeline as cards: every run that left a state, plus one card for
-    each pass that never changed anything."""
+    """The pipeline as cards: one per pass, holding every run that left a state."""
     by_run = dumps_by_run(runs, dumps)
     dumping = {dump.pass_name for dump in dumps}
-    slots: list[Slot] = []
-    listed: set[str] = set()
+    order: list[str] = []
+    first: dict[str, PassRun] = {}
+    collected: dict[str, list[RunState]] = {}
     for run in runs:
         if run.name in DRIVER_PASSES:
             continue
         left = tuple(by_run.get(run.index, ()))
-        if not left and (run.name in dumping or run.name in listed):
+        # A run that left nothing is only worth a card if its pass never dumps.
+        if not left and (run.name in dumping or run.name in collected):
             continue
-        listed.add(run.name)
-        slots.append(Slot(len(slots) + 1, run.name, run, left))
-    return slots
+        if run.name not in collected:
+            order.append(run.name)
+            first[run.name] = run
+            collected[run.name] = []
+        collected[run.name].append(RunState(run, left))
+    # run_index is the pass's first *run*, so a card can still name a run.
+    return [
+        Slot(first[name].index, name, first[name], tuple(collected[name]))
+        for name in order
+    ]
 
 
 # --- the timelines ------------------------------------------------------------
@@ -292,11 +313,11 @@ def lane_a_timeline(slots: Sequence[Slot], input_ir: str | None) -> Timeline:
     timeline = Timeline()
     if input_ir is not None:
         timeline.seed(input_ir)
-    for slot in slots:
-        if not slot.dumps:
-            continue
-        for name, text in dump_states(slot.dumps[-1]).items():
-            timeline.record(name, slot.run_index, slot.name, text)
+    # Cards group a pass's runs, so flatten and re-sort by run ordinal.
+    states = [state for slot in slots for state in slot.runs if state.dumps]
+    for state in sorted(states, key=lambda s: s.run.index):
+        for name, text in dump_states(state.dumps[-1]).items():
+            timeline.record(name, state.run.index, state.run.name, text)
     return timeline
 
 

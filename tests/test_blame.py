@@ -184,14 +184,23 @@ def test_a_dump_with_no_run_before_it_is_dropped():
 # --- the card list ------------------------------------------------------------
 
 
-def test_every_run_that_dumped_gets_its_own_card():
-    """A pass that ran ten times and changed ten times gets ten cards."""
+def test_a_pass_that_ran_many_times_gets_one_card_holding_every_run():
+    """One card per pass, so a repeated pass reads as one entry in the pipeline."""
     runs = [run("A", 1, 10), run("B", 2, 20), run("A", 3, 30)]
     dumps = [dump("A", "main", "x", 15), dump("A", "main", "y", 35)]
     slots = lane_a_slots(runs, dumps)
-    assert [(s.name, s.run.index, [d.ir for d in s.dumps]) for s in slots] == [
-        ("A", 1, ["x"]), ("B", 2, []), ("A", 3, ["y"]),
-    ]
+    assert [
+        (s.name, [state.run.index for state in s.runs],
+         [d.ir for state in s.runs for d in state.dumps])
+        for s in slots
+    ] == [("A", [1, 3], ["x", "y"]), ("B", [2], [])]
+
+
+def test_the_card_leaves_behind_its_last_runs_state():
+    runs = [run("A", 1, 10), run("A", 3, 30)]
+    dumps = [dump("A", "main", "x", 15), dump("A", "main", "y", 35)]
+    slots = lane_a_slots(runs, dumps)
+    assert [d.ir for d in slots[0].dumps] == ["y"]
 
 
 def test_a_pass_that_never_changed_anything_is_one_card():
@@ -206,11 +215,11 @@ def test_the_driver_passes_get_no_card():
     assert [s.name for s in slots] == ["A"]
 
 
-def test_card_positions_are_their_own_numbering():
-    """Cards are numbered by position, not by the pass-manager run index."""
+def test_a_card_is_numbered_by_its_first_run():
+    """A card names the run it first happened at, not its place in the rail."""
     runs = [run("A", 7, 10), run("B", 9, 20)]
     slots = lane_a_slots(runs, [dump("A", "main", "x", 15)])
-    assert [s.run_index for s in slots] == [1, 2]
+    assert [s.run_index for s in slots] == [7, 9]
 
 
 # --- the timeline -------------------------------------------------------------

@@ -51,6 +51,14 @@ def _stamp_assets(report_dir: Path) -> None:
 
 
 @dataclass
+class RunSegment:
+    """One run of a pass, as the diff view shows it on its own."""
+
+    run_index: int
+    functions: dict[str, FnChange] = field(default_factory=dict)
+
+
+@dataclass
 class ReportPass:
     id: int
     lane: str  # "ir" | "mir"
@@ -60,6 +68,8 @@ class ReportPass:
     time_ms: float | None
     changed: bool
     functions: dict[str, FnChange] = field(default_factory=dict)
+    # Every run this card covers, in pipeline order; empty when it ran once.
+    runs: list[RunSegment] = field(default_factory=list)
     dots: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
     analyses: dict[str, list[str]] = field(default_factory=dict)  # run/cached/invalidated
     log: str = ""
@@ -112,6 +122,14 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
         "analyses": pass_.analyses,
         "log": pass_.log,
     }
+    if len(pass_.runs) > 1:
+        entry["runs"] = [
+            {"runIndex": run.run_index, "functions": {
+                fn: {"before": c.before, "after": c.after, "changed": c.changed}
+                for fn, c in run.functions.items()
+            }}
+            for run in pass_.runs
+        ]
     if pass_.lane == "mir":
         entry["spills"] = pass_.spills
         entry["spillSites"] = pass_.spill_sites
@@ -122,19 +140,29 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
     return entry
 
 
-def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
-    """Lines added/removed across every function this pass touched."""
-    if pass_.is_input or pass_.is_output:
-        return None
-    module_change = pass_.functions.get(MODULE_FN)
+def _delta_of(changes: dict[str, FnChange]) -> tuple[int, int]:
+    """Lines added and removed across one set of changes, module row winning."""
+    module_change = changes.get(MODULE_FN)
     if module_change is not None:
-        added, removed = module_change.line_delta
-        return {"added": added, "removed": removed}
+        return module_change.line_delta
     added = removed = 0
-    for change in pass_.functions.values():
+    for change in changes.values():
         fn_added, fn_removed = change.line_delta
         added += fn_added
         removed += fn_removed
+    return added, removed
+
+
+def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
+    """Lines added/removed across every run and function this pass touched."""
+    if pass_.is_input or pass_.is_output:
+        return None
+    added = removed = 0
+    for run in pass_.runs or [None]:
+        run_added, run_removed = _delta_of(
+            pass_.functions if run is None else run.functions)
+        added += run_added
+        removed += run_removed
     return {"added": added, "removed": removed}
 
 
@@ -152,6 +180,8 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "isInput": p.is_input,
             "isOutput": p.is_output,
             "lineDelta": _line_delta(p),
+            # Every run this card answers for, so a run can be resolved to a card.
+            "runs": [run.run_index for run in p.runs] or [p.run_index],
             "spillCount": sum(p.spills.values()) if p.spills else None,
             # Which functions the ISel view can be offered for, if any.
             "iselFns": sorted(p.isel_map) or None,
