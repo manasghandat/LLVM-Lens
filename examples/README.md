@@ -41,3 +41,18 @@ llvm-lens --sample switch-lowering --open
 LLVM plugin, a `Makefile` to build it, and an `llvm-lens.yml` that wires the
 plugin and its pass name up. It is not bundled, because its `.so` has to be
 compiled against your own LLVM. See its [README](mba-add/README.md).
+
+## json-query
+
+[`json-query/`](json-query/) is a multi-file example: `jsonq`, a small JSON
+tool in seven `.cpp` files over one shared header. Its `Makefile` builds the
+program, and separately compiles each unit to IR and joins them with
+`llvm-link`, so the report's IR lane starts with the whole program in front of
+it — which a normal build, compiling and linking at the object level, never
+gives the optimizer. Every unit carries debug info, so the source pane spans
+all seven files. See its [README](json-query/README.md).
+
+Note that it is a real C++ program: 99 functions, against the three of a
+bundled sample. The report's IR lane prints the module after every pass that
+changed it, so budget for the size — the README says how to scope a pipeline
+down to the passes you actually want to read.
