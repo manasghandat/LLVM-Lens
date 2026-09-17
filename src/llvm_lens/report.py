@@ -173,6 +173,10 @@ def lane_a_passes(
     passes: list[ReportPass] = []
     # Last CFG drawn for each entity; the DOT is a pure function of the text.
     prev_dots: dict[str, str | None] = {}
+    # Last source map built for each entity, with the text it was built on: a
+    # map is only good for that exact text, and other passes move it between
+    # this pass's runs.
+    prev_srcs: dict[str, tuple[str, LineMap]] = {}
     # Functions the module currently holds, in module order.
     known_fns: list[str] = []
     if input_ir is not None:
@@ -184,8 +188,9 @@ def lane_a_passes(
             timed.add(slot.name)
             time_ms = summary_ms.get(slot.name, anchor_ms.get(index))
 
-        # One card per pass, so its rows carry every run it made. What the card
-        # leaves behind is the last run's state, which is what its CFG shows.
+        # One card per pass, so its rows carry every run it made. Each run keeps
+        # its own diff, CFG and source map; the card's own are the last one's,
+        # which is the state it leaves behind.
         segments: list[RunSegment] = []
         fn_changes: dict[str, FnChange] = {}
         src_maps: dict[str, LineMap] = {}
@@ -213,11 +218,26 @@ def lane_a_passes(
                 if after:
                     # The state before this run is the state this one replaced.
                     run_changes[fn] = FnChange(fn, timeline.at(fn, run_index - 1), after)
+
+            run_srcs: dict[str, LineMap] = {}
             if dumped is not None and mapped and dumped.metadata:
                 table = parse_debug_table(dumped.metadata)
                 entity = canonical_fn(dumped.function)
                 if table and entity in run_changes:
-                    src_maps[entity] = map_lines(run_changes[entity].after, table)
+                    run_srcs[entity] = map_lines(run_changes[entity].after, table)
+
+            # A map describes a state, not a run, so carry one forward only while
+            # the text it was built on still stands — a pass that skipped the
+            # function still sees whatever the passes between moved it to.
+            for fn, change in run_changes.items():
+                if fn in run_srcs:
+                    prev_srcs[fn] = (change.after, run_srcs[fn])
+                    continue
+                held = prev_srcs.get(fn)
+                if held is not None and held[0] == change.after:
+                    run_srcs[fn] = held[1]
+                else:
+                    prev_srcs.pop(fn, None)
 
             run_dots: dict[str, tuple[str | None, str | None]] = {}
             for fn, change in run_changes.items():
@@ -237,8 +257,9 @@ def lane_a_passes(
 
             changed = changed or any(c.changed for c in run_changes.values())
             if dumped is not None:
-                segments.append(RunSegment(run_index, run_changes))
-            fn_changes, dots = run_changes, run_dots
+                segments.append(RunSegment(run_index, run_changes, run_dots, run_srcs))
+            # The card's own are the last run's, so each of the three agrees.
+            fn_changes, dots, src_maps = run_changes, run_dots, run_srcs
 
         analysed: dict[str, list[str]] = {"run": [], "cached": [], "invalidated": []}
         for state in slot.runs:
@@ -607,17 +628,23 @@ def build_commands(
 
 def _attach_source_maps(passes: list[ReportPass]) -> list[dict[str, str]]:
     """Read every mapped source file and re-encode the maps against its index."""
-    every: list[LineMap] = [
-        mapping for pass_ in passes for mapping in pass_.src_maps.values()
-    ]
+    every: list[LineMap] = []
+    for pass_ in passes:
+        every += list(pass_.src_maps.values())
+        for run in pass_.runs:
+            every += list(run.src_maps.values())
     if not every:
         return []
     texts = read_sources(every)
     files = sorted(texts)
+
+    def against_files(maps: dict[str, LineMap]) -> dict[str, LineMap]:
+        return {fn: encode(mapping, files) for fn, mapping in maps.items()}
+
     for pass_ in passes:
-        pass_.src_maps = {
-            fn: encode(mapping, files) for fn, mapping in pass_.src_maps.items()
-        }
+        pass_.src_maps = against_files(pass_.src_maps)
+        for run in pass_.runs:
+            run.src_maps = against_files(run.src_maps)
     return [
         {"path": path, "name": Path(path).name, "text": texts[path]}
         for path in files

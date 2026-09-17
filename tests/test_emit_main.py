@@ -502,6 +502,47 @@ def test_build_lane_a_maps_source_off_each_dump_s_own_metadata():
     assert [None, SourceRef("/repo/sample.c", 42), None] == mapped
     assert build_lane_a(stderr, mapped=False)[0].src_maps == {}
 
+DBG = (
+    "!7 = !DILocation(line: 42, column: 3, scope: !8)\n"
+    "!8 = distinct !DISubprogram(name: \"a\", file: !9, line: 40)\n"
+    "!9 = !DIFile(filename: \"sample.c\", directory: \"/repo\")\n"
+)
+SHORT_A = "define i32 @a() {\n  ret i32 1, !dbg !7\n}"
+TALL_A = ("define i32 @a() {\n  %x = add i32 1, 2\n  %y = add i32 %x, 3\n"
+          "  ret i32 %y, !dbg !7\n}")
+B_ONE = "define i32 @b() {\n  ret i32 2\n}"
+B_TWO = "define i32 @b() {\n  ret i32 3\n}"
+
+
+def _dump(pass_name, entity, a_body, b_body):
+    return (
+        f"Running pass: {pass_name} on {entity}\n"
+        f"*** IR Dump After {pass_name} on {entity} ***\n"
+        f"; ModuleID = 'sample.ll'\n{a_body}\n{b_body}\n" + DBG
+    )
+
+
+def test_a_source_map_never_outlives_the_text_it_was_built_on():
+    """A pass's runs are not adjacent — the lane runs everything else between
+    them — so a map built on an earlier run's text cannot answer for the state
+    the card leaves behind."""
+    stderr = (
+        _dump("SROAPass", "a", SHORT_A, B_ONE)     # SROA dumps a, and maps it
+        + _dump("IPSCCPPass", "a", TALL_A, B_ONE)  # something else moves a
+        + _dump("SROAPass", "b", TALL_A, B_TWO)    # SROA's next run dumps b
+    )
+    sroa = next(p for p in build_lane_a(stderr) if p.name == "SROAPass")
+    assert [r.run_index for r in sroa.runs] == [1, 3]
+
+    # The card's diff is the last run's, so its map must fit that text or go.
+    change = sroa.functions["a"]
+    assert change.after == TALL_A
+    assert sroa.src_maps.get("a") is None
+
+    # A function nobody moved in between keeps the map it already had.
+    assert len(sroa.src_maps["b"]) == len(sroa.functions["b"].after.splitlines())
+
+
 def test_build_lane_a_marks_custom(capture):
     # --custom-pass matches case-insensitively; only the named pass is flagged.
     passes = build_lane_a(capture("opt-sample.stderr"), custom_passes=("sroapass",))
