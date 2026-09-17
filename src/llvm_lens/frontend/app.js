@@ -503,6 +503,7 @@ let STATE = {
   srcLine: null,             // Source view: correlated source line, or null
   iselBlock: null,           // ISel view: correlated block pair, or null
   iselRefs: [],              // ISel view: IR lines a machine row names
+  asmSel: null,              // Asm view: {fn, mir, blk} picked pair or block
   blameLine: null,           // Blame/inspector: the IR line being attributed
   blameSide: "+",            // which side of the diff that line number counts on
   blameText: "",             // that line's text, as the clicked row rendered it
@@ -1120,27 +1121,108 @@ function scrollRowIntoView(row) {
   scroller.scrollTop = Math.max(0, top);
 }
 
+function isAsmDebugLine(line) {
+  return /^\s*(#DEBUG_|\.loc\b|\.cfi_)|^\.Ltmp\d+:/.test(line);
+}
+
+function asmCorrelation() {
+  const map = CURRENT_PASS && CURRENT_PASS.asmMap;
+  return map && STATE.fn ? map[STATE.fn] : null;
+}
+
 function asmPaneHtml() {
   const asm = CURRENT_PASS && CURRENT_PASS.asm;
   if (!asm) return pane("ASM", "", "", '<div class="cfg-empty">(loading the assembly…)</div>');
-  const lines = splitLines(asm);
-  const rows = lines.map((text, i) =>
-    `<div class="urow uctx" data-asmln="${i}"><span class="uln">${i + 1}</span>`
-    + `<code class="utext">${escapeHtml(text) || "&nbsp;"}</code></div>`).join("");
-  const stat = `${lines.length} lines` + (STATE.fn ? ` · ${escapeHtml(STATE.fn)}` : "");
-  return pane("ASM", "", stat,
-    `<div class="udiff-wrap"><div class="udiff"><div class="ubody">${rows}</div></div></div>`);
+  const asmLines = splitLines(asm);
+  const corr = asmCorrelation();
+  const change = fnChange(STATE.fn);
+  if (!corr || !change) {
+    const rows = asmLines.map((text, i) =>
+      `<div class="urow uctx" data-asmln="${i}"><span class="uln">${i + 1}</span>`
+      + `<code class="utext">${escapeHtml(text) || "&nbsp;"}</code></div>`).join("");
+    const stat = `${asmLines.length} lines` + (STATE.fn ? ` · ${escapeHtml(STATE.fn)}` : "");
+    return pane("ASM", "", stat,
+      `<div class="udiff-wrap"><div class="udiff"><div class="ubody">${rows}</div></div></div>`);
+  }
+
+  const toAsm = new Map(), toMir = new Map();
+  for (const [m, a] of corr.pairs) { toAsm.set(m, a); toMir.set(a, m); }
+  const mirBlockOf = new Map(), asmBlockOf = new Map();
+  corr.blocks.forEach((b, k) => {
+    for (let i = b.mirStart; i <= b.mirEnd; i++) mirBlockOf.set(i, k);
+    if (b.asmStart != null) for (let i = b.asmStart; i <= b.asmEnd; i++) asmBlockOf.set(i, k);
+  });
+
+  const mirRows = splitLines(change.after).map((text, i) => {
+    if (dropDebugLine(text)) return "";
+    const pair = toAsm.get(i);
+    const blk = mirBlockOf.get(i);
+    return `<div class="urow ${pair != null ? "amap" : "uctx"}" data-amir="${i}"`
+      + (blk != null ? ` data-ablk="${blk}"` : "") + `>`
+      + `<span class="uln">${i + 1}</span>`
+      + `<code class="utext">${highlightIR(text) || "&nbsp;"}</code></div>`;
+  }).join("");
+
+  const asmRows = [];
+  for (let i = corr.asmStart; i <= corr.asmEnd && i < asmLines.length; i++) {
+    const text = asmLines[i];
+    if (isAsmDebugLine(text)) continue;
+    const pair = toMir.get(i);
+    const blk = asmBlockOf.get(i);
+    asmRows.push(`<div class="urow ${pair != null ? "amap" : "anone"}" data-aasm="${i}"`
+      + (blk != null ? ` data-ablk="${blk}"` : "") + `>`
+      + `<span class="uln">${i + 1}</span>`
+      + `<code class="utext">${escapeHtml(text) || "&nbsp;"}</code></div>`);
+  }
+
+  const traced = corr.blocks.filter(b => b.asmStart != null).length;
+  const stat = `${corr.pairs.length} instructions paired · ${traced}/${corr.blocks.length} blocks`
+    + ` · ${escapeHtml(STATE.fn)}`;
+  const side = (label, body, cls) => `
+    <div class="irside ${cls}">
+      <div class="irside-head"><span>${label}</span></div>
+      <div class="udiff"><div class="ubody">${body}</div></div>
+    </div>`;
+  const body = `
+    <div class="irpair${STATE.orientation === "stack" ? " stacked" : ""}">
+      ${side("machine ir · final", mirRows, "asmmir")}
+      <div class="divider" title="drag to resize"></div>
+      ${side("assembly", asmRows.join(""), "asmasm")}
+    </div>`;
+  return pane("ASM", "", stat, body);
 }
 
-function applyAsmHighlight() {
-  const label = STATE.fn ? `${STATE.fn}:` : null;
-  let target = null;
-  document.querySelectorAll("#split .urow[data-asmln]").forEach(row => {
-    const text = label !== null ? rowText(row) : "";
-    const hit = label !== null && text.startsWith(label) && /^\s|^$/.test(text.slice(label.length));
+function applyAsmHighlight(scrollTo) {
+  const corr = asmCorrelation();
+  if (!corr) {
+    const label = STATE.fn ? `${STATE.fn}:` : null;
+    let target = null;
+    document.querySelectorAll("#split .urow[data-asmln]").forEach(row => {
+      const text = label !== null ? rowText(row) : "";
+      const hit = label !== null && text.startsWith(label) && /^\s|^$/.test(text.slice(label.length));
+      row.classList.toggle("hit", hit);
+      if (hit && !target) target = row;
+    });
+    if (target) scrollRowIntoView(target);
+    return;
+  }
+  const sel = STATE.asmSel && STATE.asmSel.fn === STATE.fn ? STATE.asmSel : null;
+  let mirLine = null, asmLine = null;
+  if (sel && sel.mir != null) {
+    mirLine = String(sel.mir);
+    const pair = corr.pairs.find(([m]) => m === sel.mir);
+    asmLine = pair ? String(pair[1]) : null;
+  }
+  const blk = sel && sel.blk != null ? String(sel.blk) : null;
+  document.querySelectorAll("#split .urow[data-amir], #split .urow[data-aasm]").forEach(row => {
+    const hit = (mirLine !== null && row.dataset.amir === mirLine)
+      || (asmLine !== null && row.dataset.aasm === asmLine);
     row.classList.toggle("hit", hit);
-    if (hit && !target) target = row;
+    row.classList.toggle("ablk", blk !== null && row.dataset.ablk === blk && !hit);
   });
+  if (!scrollTo) return;
+  const target = document.querySelector(`#split .${scrollTo} .urow.hit`)
+    || document.querySelector(`#split .${scrollTo} .urow.ablk`);
   if (target) scrollRowIntoView(target);
 }
 
@@ -2596,6 +2678,22 @@ document.getElementById("split").addEventListener("click", evt => {
     // This row is the line as it stood in the state being inspected.
     STATE.blameText = rowText(dline);
     renderMain();
+    return;
+  }
+
+  const arow = evt.target.closest("#split .urow[data-amir], #split .urow[data-aasm]");
+  if (arow && effectiveMode() === "asm") {
+    const corr = asmCorrelation();
+    if (!corr) return;
+    const fromMir = arow.dataset.amir != null;
+    const line = +(fromMir ? arow.dataset.amir : arow.dataset.aasm);
+    const pair = corr.pairs.find(p => p[fromMir ? 0 : 1] === line);
+    const mir = pair ? pair[0] : null;
+    const blk = arow.dataset.ablk != null ? +arow.dataset.ablk : null;
+    const prev = STATE.asmSel;
+    const repeat = prev && prev.fn === STATE.fn && prev.mir === mir && prev.blk === blk;
+    STATE.asmSel = repeat || (mir == null && blk == null) ? null : { fn: STATE.fn, mir, blk };
+    applyAsmHighlight(fromMir ? "asmasm" : "asmmir");
     return;
   }
 

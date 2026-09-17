@@ -431,6 +431,14 @@ body.rail-collapsed .rail-edge { display: none; }
   rgba(143, 214, 164, 0.18)), var(--panel2); }
 .cmapside .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
 
+/* --- Asm view: final machine IR <-> assembly ------------------------------- */
+
+.urow.amap { cursor: pointer; }
+.urow.amap:hover { background: var(--panel); }
+.urow.anone .utext { opacity: 0.45; }
+.urow.ablk { background: rgba(121, 201, 220, 0.06); }
+.asmmir .urow.hit, .asmasm .urow.hit { box-shadow: inset 2px 0 0 var(--trace); }
+
 /* --- Blame view: which pass last wrote each line --------------------------- */
 
 /* The run that last wrote a line, tinted so equal runs read as one band. */

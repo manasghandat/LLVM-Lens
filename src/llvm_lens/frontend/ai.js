@@ -148,7 +148,7 @@ What the report holds (so you know where to point):
   register allocator), analyses run/invalidated, and a log (that pass's own stderr).
 - "[module]" is the whole-module pseudo-row, not a function.
 - Views: Diff (what this pass touched), IR (whole bodies), CFG, Source (IR/MIR line to C line,
-  needs debug info), Asm (final assembly, on the last machine cards), ISel (IR to machine IR at instruction selection), Graphs (module analyses),
+  needs debug info), Asm (final machine IR beside the assembly, instruction by instruction, on the last machine cards), ISel (IR to machine IR at instruction selection), Graphs (module analyses),
   Structure (the pass-manager tree).`;
 
 function buildSystemPrompt() {

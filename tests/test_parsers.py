@@ -340,3 +340,17 @@ def test_vreg_to_physreg_around_rewriter(capture):
     assert mapping
     values = set(mapping.values())
     assert any(v.startswith("$") for v in values)  # physreg replacements
+
+
+def test_mir_block_re_accepts_every_block_header_form():
+    from llvm_lens.parsers.mir import BLOCK_RE
+    forms = {
+        "bb.0 (%ir-block.2):": ("0", "2"),
+        "bb.3..lr.ph (align 16):": ("3..lr.ph", None),
+        "bb.0 (%ir-block.2, align 16):": ("0", "2"),
+        "bb.4.._crit_edge.loopexit.unr-lcssa:": ("4.._crit_edge.loopexit.unr-lcssa", None),
+        "812B\tbb.1:": ("1", None),
+    }
+    for line, groups in forms.items():
+        match = BLOCK_RE.match(line)
+        assert match and match.groups() == groups, line

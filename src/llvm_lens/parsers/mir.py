@@ -15,7 +15,7 @@ FUNC_START_RE = re.compile(r"^# Machine code for function (\S+): (.+)$")
 FUNC_END_RE = re.compile(r"^# End machine code for function (\S+)\.$")
 LIVE_INS_RE = re.compile(r"^Function Live Ins: (.+)$")
 # Post-RA dumps prefix blocks with a byte size and optional alignment.
-BLOCK_RE = re.compile(r"^(?:\d+B\t)?bb\.([\w.$]+)(?: \(%ir-block\.([\w.$]+)(?:, align \d+)?\))?:$")
+BLOCK_RE = re.compile(r"^(?:\d+B\t)?bb\.([\w.$-]+)(?: \((?:%ir-block\.([\w.$-]+))?(?:, )?(?:align \d+)?\))?:$")
 SUCCESSORS_RE = re.compile(r"^\s+successors: (.+)$")
 
 # vregs: "%5", "%729:gr32", "%729.sub_32bit:gr64_with_sub_8bit", "%5.sub_32bit"

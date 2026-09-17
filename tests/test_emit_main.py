@@ -716,6 +716,8 @@ def test_build_report_end_to_end(toolchain, tmp_path):
         (tmp_path / "report" / "data" / f"pass-{output['id']}.json").read_text())
     assert all(f["after"].startswith("# Machine code for function")
                for f in output_chunk["functions"].values())
+    assert set(output_chunk["asmMap"]) == set(output_chunk["functions"])
+    assert all(c["pairs"] for c in output_chunk["asmMap"].values())
     chunk = json.loads((tmp_path / "report" / "data" / f"pass-{first['id']}.json").read_text())
     assert chunk["functions"][MODULE_FN]["before"] == ""
     assert "define" in chunk["functions"][MODULE_FN]["after"]

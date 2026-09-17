@@ -70,6 +70,7 @@ class ReportPass:
     # mir only, instruction selection alone: fn -> IR/MIR block correlation.
     isel_map: dict[str, dict[str, Any]] = field(default_factory=dict)
     asm: str | None = None  # final assembly text, attached to the last mir pass
+    asm_map: dict[str, dict[str, Any]] = field(default_factory=dict)
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
     # Synthetic pre-pipeline card; nothing to diff against, no CFG to show.
     is_input: bool = False
@@ -117,6 +118,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
         entry["regMap"] = pass_.reg_map
         entry["iselMap"] = pass_.isel_map
         entry["asm"] = pass_.asm
+        entry["asmMap"] = pass_.asm_map
     return entry
 
 

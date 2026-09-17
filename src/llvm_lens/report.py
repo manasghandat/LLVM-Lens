@@ -20,6 +20,7 @@ from .compile import CompiledSource, compile_to_ir
 from .config import load_config
 from .diff import FnChange
 from .emit import MODULE_FN, ReportPass, emit_report
+from .asm import correlate_asm
 from .isel import correlate
 from .parsers.debug_pass_manager import parse_pass_runs
 from .parsers.legacy_pass_structure import PassNode, analyses_by_pass, build_tree, parse_pass_structure
@@ -327,6 +328,7 @@ def build_output_pass(passes: list[ReportPass]) -> ReportPass | None:
         spills=spills,
         spill_sites=spill_sites,
         asm=next((p.asm for p in reversed(machine) if p.asm), None),
+        asm_map=next((p.asm_map for p in reversed(machine) if p.asm), {}),
         src_maps=src_maps,
         is_output=True,
     )
@@ -475,9 +477,17 @@ def lane_b_passes(
         _attach_isel(passes[0], by_id[order[0]], parse_ir_dumps(stderr))
     if passes and asm_text:
         passes[-1].asm = asm_text
+        _attach_asm_map(passes[-1], asm_text)
     card_of = {pass_id: (index, by_id[pass_id][0].pass_name)
                for index, pass_id in enumerate(order, start=1)}
     return passes, nodes, pass_arguments, mir_timeline(passes)
+
+
+def _attach_asm_map(card: ReportPass, asm_text: str) -> None:
+    for fn, change in card.functions.items():
+        correlation = correlate_asm(change.after, asm_text, fn)
+        if correlation:
+            card.asm_map[fn] = correlation
 
 
 def _attach_isel(card: ReportPass, group: list[Any], ir_dumps: list[IrDump]) -> None:
