@@ -44,6 +44,7 @@ __all__ = ["DEFAULT_PASSES", "build_report", "build_lane_a", "build_lane_b"]
 
 INPUT_PASS_NAME = INPUT_NAME
 BACKEND_INPUT_PASS_NAME = "Optimized IR"
+OUTPUT_PASS_NAME = "Optimized MIR"
 
 
 # --- lane builders -----------------------------------------------------------
@@ -283,6 +284,51 @@ def build_input_pass(
             f"{note} ({origin}).",
         src_maps={MODULE_FN: map_lines(text, table)} if table else {},
         is_input=True,
+    )
+
+
+def build_output_pass(passes: list[ReportPass]) -> ReportPass | None:
+    """The synthetic card holding each function's machine IR after the last llc pass."""
+    machine = [p for p in passes if not p.is_input and not p.is_output]
+    if not machine:
+        return None
+    functions: dict[str, FnChange] = {}
+    dots: dict[str, tuple[str | None, str | None]] = {}
+    src_maps: dict[str, Any] = {}
+    spills: dict[str, int] = {}
+    spill_sites: dict[str, list[dict[str, str]]] = {}
+    for pass_ in machine:
+        for fn, change in pass_.functions.items():
+            functions.pop(fn, None)
+            functions[fn] = FnChange(fn, change.after, change.after)
+            dots[fn] = (None, pass_.dots.get(fn, (None, None))[1])
+            if fn in pass_.src_maps:
+                src_maps[fn] = pass_.src_maps[fn]
+            else:
+                src_maps.pop(fn, None)
+            spills[fn] = pass_.spills.get(fn, 0)
+            if fn in pass_.spill_sites:
+                spill_sites[fn] = pass_.spill_sites[fn]
+            else:
+                spill_sites.pop(fn, None)
+    last = machine[-1]
+    return ReportPass(
+        id=0,  # assigned by build_report
+        lane="mir",
+        name=OUTPUT_PASS_NAME,
+        pass_id=None,
+        run_index=last.run_index + 1,
+        time_ms=None,
+        changed=True,
+        functions=functions,
+        dots=dots,
+        analyses={"run": []},
+        log=f"Machine IR as it left the backend, after every llc pass (last: {last.name}).",
+        spills=spills,
+        spill_sites=spill_sites,
+        asm=next((p.asm for p in reversed(machine) if p.asm), None),
+        src_maps=src_maps,
+        is_output=True,
     )
 
 
@@ -645,6 +691,9 @@ def build_report(
                 llc_stderr, asm_text, custom_passes, mir_table,
             )
             lane_b += built
+            output_card = build_output_pass(built)
+            if output_card is not None:
+                lane_b.append(output_card)
     total_ms = (time.perf_counter() - started) * 1000.0
 
     all_passes = lane_a + lane_b

@@ -142,12 +142,13 @@ Answer:
 What the report holds (so you know where to point):
 - Two lanes. IR is the opt middle-end pipeline; machine is the llc backend. Each lane opens with
   an input card ("Input IR" / "Optimized IR") holding the whole module that lane was handed.
+  The machine lane closes with "Optimized MIR": every function's machine IR after the last llc pass.
 - A pass card carries before/after snapshots per function; Changes is lines added/removed. Some
   cards also carry spills (stack traffic), a regmap (virtual to physical register, from the
   register allocator), analyses run/invalidated, and a log (that pass's own stderr).
 - "[module]" is the whole-module pseudo-row, not a function.
 - Views: Diff (what this pass touched), IR (whole bodies), CFG, Source (IR/MIR line to C line,
-  needs debug info), ISel (IR to machine IR at instruction selection), Graphs (module analyses),
+  needs debug info), Asm (final assembly, on the last machine cards), ISel (IR to machine IR at instruction selection), Graphs (module analyses),
   Structure (the pass-manager tree).`;
 
 function buildSystemPrompt() {
@@ -264,6 +265,7 @@ function contextDigest(opts) {
           + ` invalidated ${summary.analysisCounts.invalidated || 0}`
         : "",
       summary.isInput ? "this is an input card (whole module, no diff, no CFG)" : "",
+      summary.isOutput ? "this is the output card (final machine IR per function, no diff)" : "",
     ].filter(Boolean).join("\n"));
   } else {
     parts.push("=== no pass selected ===");

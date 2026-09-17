@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 
 from llvm_lens.diff import FnChange
-from llvm_lens.emit import ReportPass, emit_report
+from llvm_lens.emit import ReportPass, _manifest_json, emit_report
 from llvm_lens.report import (
-    BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, _build_ir_tree,
+    BACKEND_INPUT_PASS_NAME, INPUT_PASS_NAME, MODULE_FN, OUTPUT_PASS_NAME, _build_ir_tree,
     _effective_pipeline, build_commands, build_input_pass, build_lane_a,
-    build_lane_b, build_report,
+    build_lane_b, build_output_pass, build_report,
 )
 from llvm_lens.parsers.print_changed import split_module_functions, strip_module_noise
 from llvm_lens.sourcemap import SourceRef
@@ -574,6 +574,38 @@ def test_build_input_pass_maps_lines_through_the_modules_own_metadata():
     assert build_input_pass(INPUT_MODULE, Path("in.ll"), mapped=False).src_maps == {}
 
 
+def test_build_output_pass_carries_each_functions_last_machine_ir():
+    isel = ReportPass(
+        id=0, lane="mir", name="ISel", pass_id="x86-isel", run_index=1,
+        time_ms=None, changed=True,
+        functions={"main": FnChange("main", "", "m1"), "f": FnChange("f", "", "f1")},
+        dots={"main": (None, "digraph m1"), "f": (None, "digraph f1")},
+        spills={"main": 0, "f": 0},
+    )
+    greedy = ReportPass(
+        id=0, lane="mir", name="Greedy", pass_id="greedy", run_index=2,
+        time_ms=None, changed=True,
+        functions={"main": FnChange("main", "m1", "m2")},
+        dots={"main": ("digraph m1", "digraph m2")},
+        spills={"main": 1},
+        spill_sites={"main": [{"kind": "spill", "slot": "0", "block": "bb.0", "text": "x"}]},
+        asm="main:\n  ret\n",
+    )
+    card = build_output_pass([isel, greedy])
+    assert card.name == OUTPUT_PASS_NAME and card.lane == "mir"
+    assert card.is_output and not card.is_input and card.changed
+    assert card.run_index == 3
+    assert card.functions["main"].after == "m2" and card.functions["f"].after == "f1"
+    assert not card.functions["main"].changed
+    assert card.dots == {"main": (None, "digraph m2"), "f": (None, "digraph f1")}
+    assert card.spills == {"main": 1, "f": 0} and "main" in card.spill_sites
+    assert card.asm == "main:\n  ret\n"
+
+    entry = _manifest_json([card], {})["passes"][0]
+    assert entry["isOutput"] and entry["lineDelta"] is None and entry["hasAsm"]
+    assert build_output_pass([]) is None
+
+
 def test_build_input_pass_without_debug_info_still_shows_the_module():
     card = build_input_pass("define i32 @main() {\n  ret i32 0\n}\n", Path("in.ll"))
     assert card.src_maps == {}
@@ -677,6 +709,13 @@ def test_build_report_end_to_end(toolchain, tmp_path):
     backend_chunk = json.loads(
         (tmp_path / "report" / "data" / f"pass-{backend['id']}.json").read_text())
     assert "define" in backend_chunk["functions"][MODULE_FN]["after"]
+
+    output = [p for p in manifest["passes"] if p["lane"] == "mir"][-1]
+    assert output["name"] == OUTPUT_PASS_NAME and output["isOutput"]
+    output_chunk = json.loads(
+        (tmp_path / "report" / "data" / f"pass-{output['id']}.json").read_text())
+    assert all(f["after"].startswith("# Machine code for function")
+               for f in output_chunk["functions"].values())
     chunk = json.loads((tmp_path / "report" / "data" / f"pass-{first['id']}.json").read_text())
     assert chunk["functions"][MODULE_FN]["before"] == ""
     assert "define" in chunk["functions"][MODULE_FN]["after"]

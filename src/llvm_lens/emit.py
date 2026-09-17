@@ -73,6 +73,7 @@ class ReportPass:
     is_custom: bool = False  # named via --custom-pass (plugin-loaded pass)
     # Synthetic pre-pipeline card; nothing to diff against, no CFG to show.
     is_input: bool = False
+    is_output: bool = False
     # fn -> source map of the "after" snapshot (per line, [file index, line] or None).
     src_maps: dict[str, list[Any]] = field(default_factory=dict)
     # Pass-manager scope (ir lane only): "module" | "cgscc" | "function" | "loop".
@@ -121,7 +122,7 @@ def _pass_json(pass_: ReportPass) -> dict[str, Any]:
 
 def _line_delta(pass_: ReportPass) -> dict[str, int] | None:
     """Lines added/removed across every function this pass touched."""
-    if pass_.is_input:
+    if pass_.is_input or pass_.is_output:
         return None
     module_change = pass_.functions.get(MODULE_FN)
     if module_change is not None:
@@ -147,10 +148,12 @@ def _manifest_json(passes: list[ReportPass], metadata: dict[str, Any]) -> dict[s
             "changed": p.changed,
             "isCustom": p.is_custom,
             "isInput": p.is_input,
+            "isOutput": p.is_output,
             "lineDelta": _line_delta(p),
             "spillCount": sum(p.spills.values()) if p.spills else None,
             # Which functions the ISel view can be offered for, if any.
             "iselFns": sorted(p.isel_map) or None,
+            "hasAsm": bool(p.asm),
             "analysisCounts": {
                 "run": len(p.analyses.get("run", [])),
                 "cached": len(p.analyses.get("cached", [])),

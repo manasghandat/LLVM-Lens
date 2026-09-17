@@ -215,7 +215,7 @@ async function blameIdsFor(lane) {
   if (!blameIds.has(lane)) {
     const manifest = await manifestPromise;
     blameIds.set(lane, new Map(manifest.passes
-      .filter(p => p.lane === lane && !p.isInput)
+      .filter(p => p.lane === lane && !p.isInput && !p.isOutput)
       .map(p => [p.runIndex, p.id])));
   }
   return blameIds.get(lane);
@@ -520,6 +520,7 @@ function currentPassSummary() { return passSummaries().find(p => p.id === STATE.
 
 // --- input cards (report.build_input_pass) ---
 const INPUT_MODES = ["ir", "src"];
+const OUTPUT_MODES = ["cfg", "ir", "blame", "src", "asm"];
 const GLOBAL_MODES = ["structure", "analyses", "pipeline"];
 // Overviews are whole-report, so drilling into a pass must not return to them.
 const OVERVIEW_MODES = ["structure", "pipeline"];
@@ -529,14 +530,26 @@ function isInputCard() {
   return !!(summary && summary.isInput);
 }
 
+function isOutputCard() {
+  const summary = currentPassSummary();
+  return !!(summary && summary.isOutput);
+}
+
 function hasIselMap() {
   const summary = currentPassSummary();
   return !!(summary && summary.iselFns && STATE.fn && summary.iselFns.includes(STATE.fn));
 }
 
+function hasAsm() {
+  const summary = currentPassSummary();
+  return !!(summary && summary.hasAsm);
+}
+
 function modeAvailable(mode) {
   if (GLOBAL_MODES.includes(mode)) return true;
   if (mode === "isel") return hasIselMap();
+  if (mode === "asm") return hasAsm();
+  if (isOutputCard()) return OUTPUT_MODES.includes(mode);
   return !isInputCard() || INPUT_MODES.includes(mode);
 }
 
@@ -663,7 +676,7 @@ function fnRowHtml(n) {
     stat = `<span class="stat"><span class="minus">−${del}</span> <span class="plus">+${add}</span></span>`;
   }
   return `
-      <div class="row ${changed ? "" : "dim"} ${n === STATE.fn ? "sel" : ""}" data-fn="${escapeHtml(n)}">
+      <div class="row ${changed || isOutputCard() ? "" : "dim"} ${n === STATE.fn ? "sel" : ""}" data-fn="${escapeHtml(n)}">
         <span class="name">${escapeHtml(n)}</span>
         ${changed ? '<span class="dot"></span>' : ""}
         ${stat || '<span class="stat"></span>'}
@@ -675,7 +688,7 @@ function renderFnList() {
   const all = fnNames();
   const names = all.filter(n => !q || n.toLowerCase().includes(q));
   let rows;
-  if (all.length >= FN_GROUP_AT && CURRENT_PASS) {
+  if (all.length >= FN_GROUP_AT && CURRENT_PASS && !isOutputCard()) {
     const group = (label, list) => list.length
       ? `<div class="fngroup">${label}<span class="count">${list.length}</span></div>`
         + list.map(fnRowHtml).join("")
@@ -1037,7 +1050,7 @@ function pipelineTreeHtml() {
   const tree = manifest.metadata.pipelineTree;
   const summariesById = new Map(manifest.passes.map(p => [p.id, p]));
   // What the tree can hold, so "shown" can only be short of it by the filter.
-  const totalPasses = manifest.passes.filter(p => !p.isInput).length;
+  const totalPasses = manifest.passes.filter(p => !p.isInput && !p.isOutput).length;
   if (!tree || (!tree.ir && !tree.mir)) {
     return pane("STRUCTURE", "", "",
       '<div class="cfg-empty">(no no structure captured)</div>');
@@ -1107,6 +1120,30 @@ function scrollRowIntoView(row) {
   scroller.scrollTop = Math.max(0, top);
 }
 
+function asmPaneHtml() {
+  const asm = CURRENT_PASS && CURRENT_PASS.asm;
+  if (!asm) return pane("ASM", "", "", '<div class="cfg-empty">(loading the assembly…)</div>');
+  const lines = splitLines(asm);
+  const rows = lines.map((text, i) =>
+    `<div class="urow uctx" data-asmln="${i}"><span class="uln">${i + 1}</span>`
+    + `<code class="utext">${escapeHtml(text) || "&nbsp;"}</code></div>`).join("");
+  const stat = `${lines.length} lines` + (STATE.fn ? ` · ${escapeHtml(STATE.fn)}` : "");
+  return pane("ASM", "", stat,
+    `<div class="udiff-wrap"><div class="udiff"><div class="ubody">${rows}</div></div></div>`);
+}
+
+function applyAsmHighlight() {
+  const label = STATE.fn ? `${STATE.fn}:` : null;
+  let target = null;
+  document.querySelectorAll("#split .urow[data-asmln]").forEach(row => {
+    const text = label !== null ? rowText(row) : "";
+    const hit = label !== null && text.startsWith(label) && /^\s|^$/.test(text.slice(label.length));
+    row.classList.toggle("hit", hit);
+    if (hit && !target) target = row;
+  });
+  if (target) scrollRowIntoView(target);
+}
+
 function renderMain() {
   const mode = effectiveMode();
   // The lineage document is one file per lane, so it loads on demand.
@@ -1123,9 +1160,11 @@ function renderMain() {
             : mode === "src" ? srcPaneHtml()
               : mode === "analyses" ? analysesPaneHtml()
                 : mode === "isel" ? iselPaneHtml()
+                : mode === "asm" ? asmPaneHtml()
                   : irPaneHtml();
   if (mode === "src") applySrcHighlight("cmapside");
   if (mode === "isel") applyIselHighlight();
+  if (mode === "asm") applyAsmHighlight();
   applyBlameHighlight();
   const first = split.querySelector(".irpair > .irside");
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
@@ -1223,12 +1262,11 @@ function applyIselHighlight(scrollTo) {
 function bottomTabs() {
   if (isInputCard()) return [{ tab: "Log" }];
   const runs = ((currentPassSummary() || {}).analysisCounts || {}).run;
-  const tabs = [{ tab: "Log" }, { tab: "Analyses", count: runs || 0 }];
+  const tabs = isOutputCard() ? [{ tab: "Log" }] : [{ tab: "Log" }, { tab: "Analyses", count: runs || 0 }];
   const regMap = CURRENT_PASS && (CURRENT_PASS.regMap || {})[STATE.fn];
   if (regMap) tabs.push({ tab: "RegMap", count: Object.keys(regMap).length });
   const sites = CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []);
   if (sites && sites.length) tabs.push({ tab: "Spills", count: sites.length });
-  if (CURRENT_PASS && CURRENT_PASS.lane === "mir" && CURRENT_PASS.asm) tabs.push({ tab: "Asm" });
   return tabs;
 }
 
@@ -1304,7 +1342,6 @@ function bottomBodyHtml() {
         + `<td class="instr">${escapeHtml(s.text)}</td></tr>`).join("")
       + `</table></div>`;
   }
-  if (STATE.bottomTab === "Asm") return `<pre class="raw">${escapeHtml(d.asm)}</pre>`;
   return "";
 }
 
@@ -1570,7 +1607,7 @@ function pipeChurn(n) {
 // isCustom must break a run: collapsing it would hide it from the view while
 // every other surface in the report still shows it.
 function pipeOwnNode(p) {
-  return !!(p.isInput || p.changed || p.isCustom);
+  return !!(p.isInput || p.isOutput || p.changed || p.isCustom);
 }
 
 function pipeSeq(passes, lane) {
@@ -1587,7 +1624,7 @@ function pipeNodeFrom(p, kind) {
     removed: (p.lineDelta || {}).removed || 0,
     spills: p.spillCount || 0, run: a.run || 0, invalidated: a.invalidated || 0,
     custom: !!p.isCustom, isel: !!(p.iselFns && p.iselFns.length),
-    entry: !!p.isInput, changed: !!p.changed, ids: [p.id], count: 1,
+    entry: !!p.isInput, exit: !!p.isOutput, changed: !!p.changed, ids: [p.id], count: 1,
   };
 }
 
@@ -1811,7 +1848,7 @@ function pipeDetailHtml(n) {
     stats.push(["churn", pipeChurn(n) ? `+${n.added} −${n.removed}` : "none"]);
   } else {
     stats.push(["time", pipeTime(n.timeMs)]);
-    if (!n.entry) {
+    if (!n.entry && !n.exit) {
       stats.push(["churn", pipeChurn(n) ? `+${n.added} −${n.removed}` : "none"]);
     }
   }
@@ -1820,6 +1857,7 @@ function pipeDetailHtml(n) {
   if (n.custom) stats.push(["custom", "yes"]);
   if (n.isel) stats.push(["isel", "selection pass"]);
   if (n.entry) stats.push(["card", "pipeline entry"]);
+  if (n.exit) stats.push(["card", "pipeline exit"]);
 
   const cells = stats.map(([k, v]) =>
     `<span class="pm"><b>${escapeHtml(k)}</b>${escapeHtml(v)}</span>`).join("");
@@ -1879,6 +1917,7 @@ function pipeNodeLabel(n, charW, maxLabelW) {
   let tail;
   if (n.kind === "agg") tail = "unchanged";
   else if (n.entry) tail = "entry";
+  else if (n.exit) tail = "exit";
   else if (n.kind === "noop") tail = "unchanged";
   else tail = pipeChurn(n) > 0 ? `+${n.added} −${n.removed}` : "";
   // Capped from the caller's own box width, so the label cannot wrap past the
@@ -1921,7 +1960,7 @@ function pipeClassOf(n) {
   else if (n.kind === "noop") cls.push("noop");
   else if (n.kind === "child") cls.push("childins");
   else cls.push("pass");
-  if (n.entry) cls.push("entry");
+  if (n.entry || n.exit) cls.push("entry");
   if (n.custom) cls.push("custom");
   if (n.isel) cls.push("isel");
   return cls.join(" ");
@@ -2376,7 +2415,7 @@ function resizeGraphs() {
 const UI_VALUES = {
   lane: ["lane", ["ir", "mir"]],
   mode: ["mode",
-    ["cfg", "diff", "ir", "blame", "src", "isel", "analyses", "structure", "pipeline"]],
+    ["cfg", "diff", "ir", "blame", "src", "asm", "isel", "analyses", "structure", "pipeline"]],
   orientation: ["orientation", ["side", "stack"]],
 };
 

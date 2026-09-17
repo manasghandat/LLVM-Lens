@@ -297,6 +297,18 @@ STATE.mode = "diff";
 SUMMARY = { id: 5, name: "SROAPass", isInput: false };
 check("mode restored when leaving the input card", effectiveMode() === "diff");
 
+SUMMARY = { id: 168, lane: "mir", name: "Optimized MIR", isOutput: true, runIndex: 85 };
+check("the output card is not an input card", !isInputCard() && isOutputCard());
+check("output card withholds diff", !modeAvailable("diff"));
+check("output card keeps cfg, ir, blame and src",
+      ["cfg", "ir", "blame", "src"].every(modeAvailable));
+check("output card falls back to ir", effectiveMode() === "ir");
+check("asm is withheld without hasAsm", !modeAvailable("asm"));
+SUMMARY = { id: 168, lane: "mir", name: "Optimized MIR", isOutput: true, hasAsm: true };
+check("output card offers asm", modeAvailable("asm"));
+SUMMARY = { id: 167, lane: "mir", name: "X86 Assembly Printer", hasAsm: true };
+check("the last machine pass offers asm", modeAvailable("asm") && modeAvailable("diff"));
+
 // Older reports have no isInput field; nothing is withheld.
 SUMMARY = { id: 5, name: "SROAPass" };
 check("a report without isInput offers everything", MODES.every(modeAvailable));
