@@ -38,6 +38,11 @@ body{
   -webkit-font-smoothing:antialiased;
   text-rendering:optimizeLegibility;
 }
+/* Chrome clips the document ground to the @page content box, so a tinted ground
+   prints as a grey block with white bands down all four paper edges -- and the
+   only way to bleed it is @page{margin:0}, which drops the top margin on every
+   continuation page. On paper the ground is white; on screen it stays tinted. */
+@media print{ html, body{ background:#FFFFFF; } }
 /* One measure for the whole document -- prose, figures, code and tables share a
    left edge. Code boxes were briefly full-width and hung 19mm out to the left. */
 .wrap{ width:140mm; max-width:100%; margin:0 auto; }
