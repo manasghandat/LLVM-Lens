@@ -13,6 +13,11 @@ mkdir -p "$S"
 # The real program: json-query, one translation unit.
 llvm-lens examples/json-query/lexer.cpp -o "$S/jsonq" --passes 'default<O2>' --no-ai
 
+# The same build a second time, this one carrying the ask-AI credential, for the
+# one figure that needs a live answer. It lands in its own directory because it
+# holds a key: never copy it anywhere, and delete it when the figures are done.
+llvm-lens examples/json-query/lexer.cpp -o "$S/jsonq-ai" --passes 'default<O2>'
+
 # The same program as one linked module, all seven translation units.
 ( cd examples/json-query && make )
 llvm-lens examples/json-query/build/json-query.ll -o "$S/jsonq-linked" --passes 'default<O2>' --no-ai

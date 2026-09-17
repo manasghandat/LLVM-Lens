@@ -110,8 +110,12 @@ section > p:first-of-type{ margin-top:0; }
 /* ---------------------------------------------------------------- figures */
 /* figures match the text measure, so two of them plus captions share one block */
 .wrap > section > figure{
-  width:140mm; max-width:100%; margin:3.4mm auto; break-inside:avoid;
+  width:130mm; max-width:100%; margin:3.2mm auto; break-inside:avoid;
 }
+/* A portrait panel shot is a full page at the text measure: narrow the shot so
+   it shares a page with its prose. Only the screen narrows -- narrowing the
+   caption too triples its height and costs back the page. */
+.wrap > section > figure.narrow .screen{ width:78mm; margin:0 auto; }
 .screen{ position:relative; background:#0D1117; line-height:0;
   border:1px solid #232A33; }
 .screen img{ display:block; width:100%; height:auto; }
@@ -352,20 +356,6 @@ over Machine IR. They stay two tabs but join into one timeline: a synthetic
 B, and a dashed edge marks the handoff between them. Read only the middle end,
 or start at the handoff and read codegen.</p>
 
-<h3>What it is made of</h3>
-
-<table class="data">
-  <tr><th>part</th><th class="n">lines</th><th>what it does</th></tr>
-  <tr><td>src/llvm_lens/</td><td class="n">4,575</td><td>drives the tools, parses their streams, walks blame, emits the report</td></tr>
-  <tr><td>frontend/app.js</td><td class="n">2,846</td><td>the report itself: ten views, no framework</td></tr>
-  <tr><td>frontend/style.css</td><td class="n">838</td><td>the report's own palette and layout</td></tr>
-  <tr><td>tests/ (21 modules)</td><td class="n">5,754</td><td>264 tests, 12 skipped — parsers, blame, ISel, and the frontend</td></tr>
-</table>
-
-<p class="small">54 commits between 29 August and 18 September 2026. Vendored:
-cytoscape.js and dagre, for the graphs. Everything else is the standard library
-and vanilla JS. Licence GPL-3.0.</p>
-
 <h3>It survives a bad run</h3>
 
 <p>If <code>opt</code> crashes or times out, the report still gets written with
@@ -440,11 +430,10 @@ runs that did move it.</p>
 
 <h3><span class="run">4.3</span>Blame — who wrote this line</h3>
 
-<p>Every line of IR knows the pass that last wrote it. The Blame view shows that
-as a gutter down the left: the ordinal of the pass run that produced the line,
-or <code>in</code> if the line has survived untouched since the input. Runs are
-tinted in eight rotating bands so a run's edits read as one block of colour
-rather than a scatter.</p>
+<p>Every line of IR knows the pass that last wrote it. Blame shows that as a
+gutter down the left: the ordinal of the run that produced the line, or
+<code>in</code> if it has survived untouched since the input, in eight rotating
+tints so a run's edits read as one block of colour rather than a scatter.</p>
 
 <figure>
   <div class="screen">
@@ -455,14 +444,37 @@ rather than a scatter.</p>
   <code>Lexer::advance</code> after the whole <code>default&lt;O2&gt;</code>
   pipeline: <b>30 lines, 6 writers</b>. The <code>in</code> rows are the lines no
   pass ever rewrote — carried through from the input. Everything else names its
-  author, a run ordinal into the lane. Click any row and the lineage opens
-  below it: every pass that touched that line since the input, oldest first,
-  each tagged <b>created</b>, <b>rewritten</b> or <b>renamed</b>. That
-  distinction is what makes the chain readable instead of a list of every pass
-  in the lane: SSA renumbering turns <code>%3</code> into <code>%7</code>
-  constantly, and that is not a rewrite — the instruction is the same
-  instruction. Each entry jumps to that pass's card.</figcaption>
+  author, a run ordinal into the lane. Click any row and the lineage opens below
+  it: every pass that touched that line since the input, oldest first, each
+  tagged <b>created</b>, <b>rewritten</b> or <b>renamed</b> — a distinction that
+  keeps the chain readable, since SSA renumbering turns <code>%3</code> into
+  <code>%7</code> constantly and that is not a rewrite. Each entry jumps to that
+  pass's card.</figcaption>
 </figure>
+
+<p>The chain in that figure belongs to line 6, the
+<code>basic_string_view::operator[]</code> call, and all seven of its entries
+are rewrites:</p>
+
+<table class="data">
+  <tr><th class="n">run</th><th>pass</th><th>what it did to that line</th></tr>
+  <tr><td class="n">9</td><td>SROAPass</td><td>rewritten</td></tr>
+  <tr><td class="n">10</td><td>EarlyCSEPass</td><td>rewritten</td></tr>
+  <tr><td class="n">154</td><td>GlobalOptPass</td><td>rewritten</td></tr>
+  <tr><td class="n">326</td><td>TailCallElimPass</td><td>rewritten</td></tr>
+  <tr><td class="n">442</td><td>PostOrderFunctionAttrsPass</td><td>rewritten</td></tr>
+  <tr><td class="n">961</td><td>InstCombinePass</td><td>rewritten</td></tr>
+  <tr><td class="n">1498</td><td>PostOrderFunctionAttrsPass</td><td>rewritten</td></tr>
+</table>
+
+<p>Look at what is <em>not</em> in that list: a <b>created</b>. Line 6 came out
+of <code>clang -O0</code> and no pass has ever introduced it — seven have
+rewritten it in place, and the last of them, the attributes pass at run 1498, is
+the one the gutter names. The opposite case sits four rows further down, the
+<code>br i1 %6, label %7, label %._crit_edge</code> at line 10: created by
+<code>GVNPass</code> run 339 and untouched ever since, a chain one row long.
+Both shapes are answers, and telling them apart by hand means diffing forty
+thousand lines. Here it is a click.</p>
 
 <figure>
   <div class="screen">
@@ -560,16 +572,33 @@ and you zoom from there.</p>
 
 <h3><span class="run">4.7</span>Analysis graphs</h3>
 
-<p>Dominator trees, control- and data-dependence graphs, post-dominators, loop
-nesting trees, and a module-wide call graph — computed from the module as it
-stands at the end of the pipeline. These are the views to reach for when the
-question is structural rather than textual: the dominance tree tells you what
-must execute before what, the dependence graph tells you what a value actually
-depends on, and the loop nest tree tells you what
-<code>LoopVectorizePass</code> was looking at. Being per-instruction, they only
-stay readable on a small function — the pane auto-fits, and on
-<code>Lexer::next</code> (77 blocks) it fits to ×0.18 and reads as a smear. That
-is a real limit, and the report does not pretend otherwise.</p>
+<p>Seven analyses are drawn from the module as it stands at the end of the
+pipeline, and the chips at the top of the pane are the list of them:
+<b>PDT</b> post-dominator tree, <b>CDG</b> control-dependence graph, <b>DDG</b>
+data-dependence graph, <b>PDG</b> program dependence (both of the above at once),
+<b>MDG</b> memory-dependence graph, <b>LNT</b> loop-nest tree, and the module-wide
+<b>call graph</b>. These are the views to reach for when the question is
+structural rather than textual: the post-dominator tree tells you what must
+execute after what, the dependence graphs tell you what a value actually depends
+on, and the loop nest tree tells you what <code>LoopVectorizePass</code> was
+looking at.</p>
+
+<figure>
+  <div class="screen">
+    <img src="shots/32-callgraph.png" alt="The module-wide call graph">
+    <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
+  </div>
+  <figcaption><span class="fig-n">Figure 8 — the call graph, and the seven graphs on offer</span>
+  The register-pressure sample, whose four functions fit at <b>ZOOM ×4.00</b>:
+  one node per function, one edge per call site, so <code>main</code> calls
+  <code>mix16</code>, <code>mix4</code> and <code>printf</code>. The chip row is
+  the honest list — seven graphs, all computed from the final module. This is
+  also the pane where the honest limit shows: these are <em>final-state</em>
+  graphs, not per-pass ones, and a per-instruction graph on a real function is
+  unreadably dense — <code>Lexer::next</code> fits to ×0.18 and reads as a
+  smear. The report does not pretend otherwise, which is why pass-level
+  questions are answered by Diff, Blame and Flow instead.</figcaption>
+</figure>
 
 <h3><span class="run">4.8</span>Source — IR line back to C++ line</h3>
 
@@ -583,7 +612,7 @@ belongs to.</p>
     <img src="shots/14-source.png" alt="IR lines mapped back to lexer.cpp">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 8 — <code>114/174 lines mapped · lexer.cpp</code>, with the file switcher open</span>
+  <figcaption><span class="fig-n">Figure 9 — <code>114/174 lines mapped · lexer.cpp</code>, with the file switcher open</span>
   The right pane is the real source; the highlighted lines are the ones this
   snapshot's IR points at. This is <code>Lexer::next</code> on
   <code>SimplifyCFGPass</code>'s 18th run, and the snapshot spans two files —
@@ -608,7 +637,7 @@ instructions, and which machine instructions became which assembly lines.</p>
     <img src="shots/15-isel.png" alt="LLVM IR entering instruction selection and Machine IR after">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 9 — instruction selection, <code>4/4 machine blocks traced · 6 value refs</code></span>
+  <figcaption><span class="fig-n">Figure 10 — instruction selection, <code>4/4 machine blocks traced · 6 value refs</code></span>
   Left, the IR entering selection; right, the Machine IR leaving it. The pairing
   is not a guess about ordering — <code>llc</code> names each machine block
   after the IR block it came from (<code>bb.2 (ir-block-7)</code>), and value
@@ -623,7 +652,7 @@ instructions, and which machine instructions became which assembly lines.</p>
     <img src="shots/16-asm.png" alt="Final Machine IR paired with the assembly it printed">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 10 — final Machine IR against the assembly printed from it</span>
+  <figcaption><span class="fig-n">Figure 11 — final Machine IR against the assembly printed from it</span>
   <code>34 instructions paired · 5/5 blocks</code>. The alignment is a longest
   common subsequence over an opcode-compatibility predicate — <code>JCC_1</code>
   against <code>ja</code>, <code>MOV64mr</code> against <code>movq</code> — so
@@ -644,7 +673,7 @@ function.</p>
     <img src="shots/21-spills.png" alt="The Greedy Register Allocator card with its spill table">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 11 — <code>mix16</code>, 16 spills and 18 reloads</span>
+  <figcaption><span class="fig-n">Figure 12 — <code>mix16</code>, 16 spills and 18 reloads</span>
   <code>Greedy Register Allocator</code> — the card is badged with the count (<b>34</b>) and so
   is every card downstream of it, because the count is a property of the
   function after allocation, not of one pass. The diff above shows
@@ -679,7 +708,7 @@ built-in ones, the tool forces a dump for them.</p>
     <img src="shots/25-custom-diff.png" alt="The MBAAdd custom pass diff">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 12 — a custom pass, <code>+8 −1</code>, on <code>sum</code></span>
+  <figcaption><span class="fig-n">Figure 13 — a custom pass, <code>+8 −1</code>, on <code>sum</code></span>
   <code>MBAAdd</code> rewrites <code>a + b</code> into a mixed boolean-arithmetic
   equivalent: <code>%s = add i8 %b, %a</code> becomes eight instructions ending
   <code>%s = add i8 111, %6</code>. Same value, unrecognisable shape — the kind
@@ -718,7 +747,7 @@ linked module, 830 runs in the lane against 264.</p>
     <img src="shots/19-linked-flow.png" alt="The flow view over a linked seven-translation-unit module">
     <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
   </div>
-  <figcaption><span class="fig-n">Figure 13 — one module, seven translation units, 101 flow nodes</span>
+  <figcaption><span class="fig-n">Figure 14 — one module, seven translation units, 101 flow nodes</span>
   The whole-program <code>default&lt;O2&gt;</code> pipeline, and the same 168
   cards the single-TU report has: a bigger module does not add passes, it adds
   runs inside them, and the churn numbers are module-scope —
@@ -733,13 +762,11 @@ linked module, 830 runs in the lane against 264.</p>
 <h3><span class="run">4.13</span>Provenance — the report says how it was made</h3>
 
 <p>A report that is going to be attached to a bug or argued over in review needs
-to say what produced it. The commands sheet prints the exact argv of all three
-tool invocations, and the report carries the config file it read, the plugins it
-loaded, and the LLVM and clang versions.</p>
-
-<p>A <b>commands</b> sheet in the report prints the verbatim argv of all three
-invocations, each with a copy button. This is the whole of what LLVM-Lens asks
-of LLVM, and it is what the report behind Figure&nbsp;2 ran:</p>
+to say what produced it. The report carries the config file it read, the plugins
+it loaded, and the LLVM and clang versions — and a <b>commands</b> sheet prints
+the verbatim argv of all three tool invocations, each with a copy button. This
+is the whole of what LLVM-Lens asks of LLVM, and it is what the report behind
+Figure&nbsp;2 ran:</p>
 
 <pre><span class="c">$</span> clang-22 -S -emit-llvm -O0 -Xclang -disable-O0-optnone -g \
         -o raw/lexer.ll examples/json-query/lexer.cpp
@@ -751,15 +778,46 @@ of LLVM, and it is what the report behind Figure&nbsp;2 ran:</p>
         -o raw/final.s raw/opt-final.ll</pre>
 
 <p>Every report carries these, so a reader can reproduce an analysis exactly
-rather than approximately.</p>
+rather than approximately. The build flag <code>--no-ai</code> is the other half
+of that: a report is a directory you will copy to a colleague or attach to a
+bug, and a credential in it would travel with it. <code>--no-ai</code> writes it
+with no key and no AI panel at all. Every report in this document was built that
+way — except the one behind Figure&nbsp;15, which needed a live key to produce a
+real answer and was built locally, never committed, and deleted once the figure
+was taken.</p>
 
-<p>There is an optional <b>ask AI</b> panel that answers questions about the
-pass and function on screen, backed by your own Anthropic or an
-OpenAI-compatible key. It is off until you configure one, it sends only the
-selected pass's summary and a bounded window of mapped source, and the build
-flag <code>--no-ai</code> exists so that a report you intend to share cannot
-carry a credential by accident. Every report in this document was built with
-<code>--no-ai</code>.</p>
+<h3><span class="run">4.14</span>Ask AI — the question you would otherwise look up</h3>
+
+<p>There is an optional <b>ask AI</b> panel, backed by your own Anthropic or
+OpenAI-compatible key and off until you configure one. Its whole value is that
+you never have to explain what you are looking at — the panel already carries
+the selected pass with its run count, lane, scope, churn, spill count, functions
+and analyses, the selected function and its diff, a bounded window of the mapped
+C++ under it, and the pass log. It is the same state the panes behind it are
+drawn from, so the question is the question you actually have:</p>
+
+<figure class="narrow">
+  <div class="screen">
+    <img src="shots/33-ask-ai.png" alt="A real answer in the ask-AI panel">
+    <i class="cb tl"></i><i class="cb tr"></i><i class="cb bl"></i><i class="cb br"></i>
+  </div>
+  <figcaption><span class="fig-n">Figure 15 — a real exchange, unedited</span>
+  Above the answer sits the <b>context line</b>: <code>pass #013 SimplifyCFGPass ·
+  _ZN5jsonq5Lexer10lex_numberEv</code> — pass and function, the same line the
+  panes behind are showing. Nothing in the question names either. The answer
+  places the pass from the log (<em>after
+  EntryExitInstrumenterPass/LowerExpectIntrinsicPass, before
+  SROAPass/EarlyCSEPass</em>), then names the change: six character tests and
+  their <code>%43</code> join folded into one <code>select</code> chain at
+  <code>%or.cond…%or.cond14</code>, leaving a single
+  <code>br i1 %or.cond14</code>, blocks <code>47/48</code> gone, the loop
+  back-edge renumbered to <code>38</code>, and <code>9:</code> now reading
+  <code>preds = %38, %1</code>. Every one of those claims is checkable against
+  the CFG pane, which is what makes the panel useful rather than merely fluent.
+  One honest detail survives in the figure: this card's pass log is 354&nbsp;kB,
+  so the panel asked before sending it and the prompt went
+  <em>trimmed</em>.</figcaption>
+</figure>
 </section>
 
 <!-- ================================================================== how -->

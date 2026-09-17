@@ -51,22 +51,36 @@ def jsonq(cdp):
         note="the diff itself: alloca/store/load gone")
 
     # Blame: the run-ordinal gutter, then a line's whole lineage. The row to
-    # click is one a pass actually wrote, not one still reading `in`.
+    # open is the one with the longest chain -- the figure's job is to show the
+    # list of passes that wrote a line, so the busiest line is the honest one.
+    # The chains are read out of the report's own blame model, before any click.
     pick_mode(cdp, "blame")
     fig(cdp, "03-blame.png", note="blame gutter, one tint band per pass run")
-    clicked = cdp.eval("""(() => {
-        const rows = [...document.querySelectorAll('#split .urow')];
-        const r = rows.find(x => {
-            const b = x.querySelector('.ublame');
-            return b && b.textContent.trim() !== 'in';
+    worst = cdp.eval("""(() => {
+        const walk = BLAME && BLAME.walk;
+        if (!walk) return null;
+        let best = null;
+        walk.history.forEach((chain, i) => {
+            if (chain && (!best || chain.length > best.n)) best = {n: chain.length, i};
         });
+        return best;
+    })()""")
+    if not worst or worst["n"] < 2:
+        raise AssertionError(f"no line with a real lineage to show: {worst}")
+    clicked = cdp.eval(f"""(() => {{
+        const r = [...document.querySelectorAll('#split .urow')][{worst['i']}];
         if (!r) return null;
         r.click();
-        return r.textContent.slice(0, 60);
-    })()""")
-    cdp.wait("!!document.querySelector('#split .brow')", "blame inspector")
+        return r.textContent.trim().slice(0, 60);
+    }})()""")
+    cdp.wait(f"document.querySelectorAll('#split .brow').length === {worst['n']}",
+             "blame inspector")
     time.sleep(0.8)
-    print(f"    clicked row: {clicked!r}")
+    print(f"    clicked row {worst['i'] + 1} ({worst['n']} writers): {clicked!r}")
+    print("    chain:", cdp.eval("""[...document.querySelectorAll('#split .brow')]
+        .map(x => [x.querySelector('.brun').textContent,
+                   x.querySelector('.bname').textContent,
+                   x.querySelector('.bkind').textContent].join(' '))"""))
     fig(cdp, "04-blame.png", note="the same pane with a line's lineage open")
     fig(cdp, "05-blame-chain.png", clip="#split", note="the chain, oldest first")
 
@@ -118,8 +132,7 @@ def jsonq(cdp):
     fig(cdp, "12-cfg-both.png",
         note=f"before ({blocks['before']}) and after ({blocks['after']}) side by side")
 
-    # Analysis graphs, on a function small enough that the dominance tree is
-    # readable at the zoom the pane fits it to.
+    # The analysis graphs are module-wide, so the card in front does not matter.
     pick_mode(cdp, "analyses")
     time.sleep(2.0)
     fig(cdp, "13-graphs.png", note="dominance tree, final state")
@@ -218,6 +231,23 @@ def regpressure(cdp):
     time.sleep(1.2)
     fig(cdp, "24-regmap-mix4.png", note="mix4 fits in 15 registers and spills nothing")
 
+    # The call graph, taken here rather than on json-query: this module has four
+    # nodes and fits at a readable zoom, where lexer.cpp's sixty-odd fit to
+    # x0.31 and read as a smear. The chip row is part of the figure -- it is the
+    # report saying which seven graphs it can draw.
+    pick_mode(cdp, "analyses")
+    time.sleep(2.0)
+    chips = cdp.eval("""[...document.querySelectorAll('#split .ptab[data-analysis]')]
+        .map(b => b.dataset.analysis)""")
+    print(f"    graphs offered: {chips}")
+    cdp.wait("!!document.querySelector('#split .ptab[data-analysis=\"cg\"]')",
+             "call graph chip")
+    cdp.click('#split .ptab[data-analysis="cg"]', "call graph chip")
+    time.sleep(2.5)
+    print("    zoom:", cdp.eval('document.querySelector(".cfg-cy-zoom").textContent'))
+    fig(cdp, "32-callgraph.png", clip="#split", dsf=2,
+        note="the module-wide call graph, and the seven the pane offers")
+
 
 # --- the custom pass --------------------------------------------------------
 
@@ -260,6 +290,82 @@ def vectorize(cdp):
     fig(cdp, "29-vectorize-scalar.png", note="a loop that could not")
 
 
+# --- the ask-AI panel, answering a real question ----------------------------
+
+AI_QUESTION = ("What is the significance of this pass in the pipeline, and how "
+               "did it change the control-flow graph for this function?")
+
+
+def askai(cdp):
+    """The one figure that needs a credential, and the only non-deterministic
+    one: it reads $S/jsonq-ai -- built without --no-ai, so the key sits in that
+    report's own sidecar and never in this repository -- and the answer is
+    whatever the model returns. The viewport is resized to the transcript once
+    it arrives: the panel is a full-height column, so a fixed height leaves a
+    band of dead space under a long answer and clips a longer one."""
+    open_report(cdp, "jsonq-ai", w=2048, h=820)
+    cdp.wait("isConfigured()", "an AI key in the report")
+    pick_pass(cdp, find_pass(cdp, "SimplifyCFGPass", changed=True))
+    pick_mode(cdp, "diff")
+    pick_run(cdp, 43)
+    pick_mode(cdp, "cfg")
+    pick_function(cdp, find_function(cdp, "5Lexer10lex_numberEv"))
+    time.sleep(2.0)
+
+    cdp.click("#aiBtn", "ask AI")
+    time.sleep(1.0)
+    ctx = cdp.eval("document.getElementById('aiCtx').textContent")
+    cdp.eval(f"document.getElementById('aiPrompt').value = {AI_QUESTION!r}; true")
+    cdp.click("#aiSend", "send")
+
+    end = time.time() + 180
+    while time.time() < end:
+        state = cdp.eval("(() => ({pending: AI_PENDING, notice: !!AI_NOTICE,"
+                         " msgs: document.querySelectorAll('#aiMessages .ai-msg').length}))()")
+        if state["notice"]:
+            # This card's pass log is 354 kB, so the panel asks before sending.
+            cdp.click('#aiMessages .ai-ask-btn[data-aisend="trimmed"]', "send trimmed")
+        elif not state["pending"] and state["msgs"] >= 2:
+            break
+        time.sleep(2)
+    else:
+        raise AssertionError("the panel never answered")
+
+    err = cdp.eval("AI_ERROR")
+    if err:
+        raise AssertionError(f"the panel errored: {err}")
+    answer = cdp.eval("""[...document.querySelectorAll('#aiMessages .ai-msg.bot .ai-text')]
+        .map(e => e.textContent).join('\\n')""").strip()
+    if len(answer) < 200:
+        raise AssertionError(f"a suspiciously short answer: {answer!r}")
+    print(f"    context : {ctx}")
+    print(f"    asked   : {AI_QUESTION}")
+    print(f"    answered: {len(answer)} chars -- {answer[:120]}...")
+
+    # Fit the window to the transcript, so the crop is all content and no gap.
+    # The transcript box is a stretched flex child: its clientHeight is the room
+    # it was given, not the text it holds, so the text is measured off the last
+    # message's own bottom edge instead.
+    fit = cdp.eval("""(() => {
+        const panel = document.getElementById('aiPanel');
+        const ms = document.getElementById('aiMessages');
+        const last = [...ms.querySelectorAll('.ai-msg')].pop();
+        const chrome = panel.getBoundingClientRect().height - ms.clientHeight;
+        const pad = parseFloat(getComputedStyle(ms).paddingBottom) || 0;
+        return {chrome: Math.ceil(chrome),
+                content: Math.ceil(last.getBoundingClientRect().bottom
+                                   - ms.getBoundingClientRect().top + pad),
+                slack: window.innerHeight - panel.getBoundingClientRect().height};
+    })()""")
+    h = fit["chrome"] + fit["content"] + fit["slack"] + 2
+    cdp.call("Emulation.setDeviceMetricsOverride", width=2048, height=h,
+             deviceScaleFactor=2, mobile=False)
+    time.sleep(1.5)
+    print(f"    window  : {h}px  (chrome {fit['chrome']} + text {fit['content']})")
+    fig(cdp, "33-ask-ai.png", clip="#aiPanel", dsf=2,
+        note=f"a real answer, {len(answer)} chars, key from the report sidecar")
+
+
 def switchlower(cdp):
     open_report(cdp, "switch")
     pick_lane(cdp, "mir")
@@ -288,6 +394,7 @@ GROUPS = {
     "vectorize": vectorize,
     "switch": switchlower,
     "licm": licm,
+    "askai": askai,
 }
 
 
