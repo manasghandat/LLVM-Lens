@@ -143,6 +143,25 @@ def build_parser() -> argparse.ArgumentParser:
              "report.  Use --no-ai before sharing a report directory.",
     )
     parser.add_argument(
+        "--causality", action=argparse.BooleanOptionalAction, default=None,
+        help="Find which pass invocations enabled or pre-empted which: re-run "
+             "opt once per invocation that changed the IR, with only that one "
+             "skipped (see --causality-limit).",
+    )
+    parser.add_argument(
+        "--causality-limit", type=int, default=None, metavar="N",
+        help="Most invocations to ablate, one opt run each.  [default: 400]",
+    )
+    parser.add_argument(
+        "--causality-jobs", type=int, default=None, metavar="N",
+        help="Ablation runs at once.  [default: one per CPU]",
+    )
+    parser.add_argument(
+        "--causality-plugin", default=None, metavar="SO",
+        help="Prebuilt provenance tracker plugin, instead of building "
+             "plugins/ProvenanceTracker.cpp with the toolchain's clang++.",
+    )
+    parser.add_argument(
         "--clang-arg", dest="clang_args", action="append", default=[], metavar="ARG",
         help=f"Extra argument for the clang invocation (repeatable). {_DASH_NOTE}",
     )
@@ -181,6 +200,10 @@ def apply_flags(settings: Settings, args: argparse.Namespace) -> Settings:
         source_map=args.source_map,
         open_report=args.open_report,
         ai=args.ai,
+        causality=args.causality,
+        causality_limit=args.causality_limit,
+        causality_jobs=args.causality_jobs,
+        causality_plugin=args.causality_plugin,
         custom_passes=settings.custom_passes + tuple(args.custom_passes),
         pass_plugins=settings.pass_plugins + tuple(args.load_pass_plugins),
         legacy_plugins=settings.legacy_plugins + tuple(args.load),
@@ -392,6 +415,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             clang_args=settings.clang_args,
             opt_args=settings.opt_args,
             llc_args=settings.llc_args,
+            causality=settings.causality,
+            causality_limit=settings.causality_limit,
+            causality_jobs=settings.causality_jobs,
+            causality_plugin=settings.causality_plugin,
             ui=settings.ui,
             config_file=settings.config_file,
         )
@@ -405,6 +432,8 @@ def main(argv: Sequence[str] | None = None) -> int:
               "(data/ai-config.*); rebuild with --no-ai before sharing it")
     print(f"passes:     {summary['laneACount']} IR, {summary['laneBCount']} machine")
     print(f"total time: {summary['totalTimeMs']:g} ms")
+    if summary.get("causality"):
+        print(f"causality:  {summary['causality']}")
     if summary["optCrashed"]:
         print("warning: opt failed/timed out; report is partial", file=sys.stderr)
     if summary["llcCrashed"]:

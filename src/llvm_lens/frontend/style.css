@@ -504,6 +504,28 @@ select.ptab:focus-visible { outline: 1px solid var(--trace); outline-offset: 1px
 .bkind.rewritten { color: var(--trace); }
 .bkind.renamed { color: var(--faint); }
 
+/* --- Causes drawer tab ------------------------------------------------------ */
+
+.cnode + .cnode { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.chead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cname { font-family: var(--mono); font-weight: 600; }
+.cverdict { margin-left: auto; font-size: 11px; color: var(--trace); }
+.cverdict.dim { color: var(--dim); }
+.cverdict.bad { color: var(--del); }
+.bpanel-body .muted { color: var(--dim); }
+.bpanel-body p.muted { margin: 0 0 8px; font-size: 12px; }
+.cnode h3 .muted { font-weight: 400; text-transform: none; letter-spacing: 0; }
+.cgroup { max-height: 160px; overflow: auto; }
+.cchain { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px;
+  font-family: var(--mono); font-size: 12px; padding: 2px 0 4px; }
+.cstep { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--r);
+  cursor: pointer; font-variant-numeric: tabular-nums; }
+.cstep:hover { background: var(--panel2); }
+.cstep.here { border-color: var(--trace); color: var(--trace); cursor: default; }
+.carrow { color: var(--faint); }
+.ckind { flex: none; font-size: 9px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--faint); }
+
 /* --- LLVM IR token colors (mirrors the llvm-syntax-highlighting grammar) --- */
 
 .tok-kw   { color: #7fa8e0; }                       /* opcodes, linkage, attrs */

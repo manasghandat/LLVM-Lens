@@ -15,6 +15,9 @@ from .blame import (
     INPUT_NAME, Timeline, blame_document, canonical_fn, lane_a_slots,
     lane_a_timeline, mir_timeline,
 )
+from .causality import (
+    CausalityError, CausalGraph, align_ords, analyze, causality_document,
+)
 from .cfg import ir_cfg_dot, machine_cfg_dot
 from .compile import CompiledSource, compile_to_ir
 from .config import load_config
@@ -600,6 +603,8 @@ COMMAND_TITLES = {
     "passthrough": ("compile", "input is already textual LLVM IR; copied in"),
     "opt": ("opt", "middle-end pipeline (Lane A)"),
     "llc": ("llc", "backend pipeline (Lane B)"),
+    "causality": ("causality", "opt under the provenance tracker; each ablation "
+                  "adds -prov-skip=<key> for one invocation"),
 }
 
 
@@ -607,11 +612,14 @@ def build_commands(
     compiled: CompiledSource,
     opt_result: OptResult | None,
     llc_result: LlcResult | None,
+    causal: CausalGraph | None = None,
 ) -> list[dict[str, Any]]:
     """The exact argv of every stage that ran, in run order."""
     stages: list[tuple[str, tuple[str, ...]]] = [(compiled.kind, compiled.cmd)]
     if opt_result is not None:
         stages.append(("opt", opt_result.cmd))
+    if causal is not None and causal.baseline_cmd:
+        stages.append(("causality", causal.baseline_cmd))
     if llc_result is not None:
         stages.append(("llc", llc_result.cmd))
     commands = []
@@ -674,6 +682,10 @@ def build_report(
     target: str | None = None,
     ui: Ui | None = None,
     config_file: str | None = None,
+    causality: bool = False,
+    causality_limit: int | None = None,
+    causality_jobs: int | None = None,
+    causality_plugin: str | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and emit the report. Returns a summary dict."""
     out = Path(output)
@@ -720,6 +732,27 @@ def build_report(
             mapped=source_map,
         )
         lane_a += ir_passes
+
+    # Needs a pipeline that completes: an ablation is compared against a
+    # baseline, and a crashed baseline has nothing to compare against.
+    causal: CausalGraph | None = None
+    causal_doc: dict[str, Any] | None = None
+    causal_error: str | None = None
+    if causality and not opt_result.failed:
+        try:
+            causal = analyze(
+                toolchain, compiled.ir_path, effective_passes,
+                tracker=Path(causality_plugin) if causality_plugin else None,
+                load_pass_plugins=load_pass_plugins, extra_args=opt_args,
+                timeout=timeout, limit=causality_limit, jobs=causality_jobs,
+            )
+            run_of = align_ords(causal, parse_pass_runs(opt_stderr))
+            causal_doc = causality_document(causal, run_of)
+            if not run_of:
+                causal_error = ("the traced pipeline did not line up with the "
+                                "report's; invocations are listed without cards")
+        except CausalityError as exc:
+            causal_error = str(exc)
 
     lane_b: list[ReportPass] = []
     mir_timeline_states = Timeline()
@@ -783,7 +816,7 @@ def build_report(
         "mtriple": target,
         "configFile": config_file,
         "ui": (ui or Ui()).as_metadata(),
-        "commands": build_commands(compiled, opt_result, llc_result),
+        "commands": build_commands(compiled, opt_result, llc_result, causal),
         "toolVersions": {name: tool.version for name, tool in toolchain.tools.items()},
         "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "totalTimeMs": round(total_ms, 1),
@@ -794,8 +827,11 @@ def build_report(
         "sourceFiles": source_files,
         "pipelineTree": pipeline_tree,
         "passArguments": pass_arguments,
+        "hasCausality": causal_doc is not None,
         "errors": {},
     }
+    if causal_error:
+        metadata["errors"]["causality"] = causal_error
     if opt_result.failed:
         metadata["errors"]["opt"] = _tail(opt_stderr)
     if llc_result and llc_result.failed:
@@ -810,6 +846,7 @@ def build_report(
             "ir": blame_document("ir", ir_timeline),
             "mir": blame_document("mir", mir_timeline_states),
         },
+        causality=causal_doc,
     )
 
     return {
@@ -822,4 +859,17 @@ def build_report(
         "llcCrashed": bool(llc_result and llc_result.failed),
         # True when the ask-AI credentials landed in the report directory.
         "aiEmbedded": bool((resolved_ai or {}).get("api_key")),
+        "causality": _causality_summary(causal, causal_error),
     }
+
+
+def _causality_summary(causal: CausalGraph | None, error: str | None) -> str | None:
+    """One line for the CLI: how much was ablated, and what came of it."""
+    if causal is None:
+        return f"failed: {error.splitlines()[0]}" if error else None
+    enables = sum(1 for e in causal.edges if e.kind == "enables")
+    line = (f"{causal.ablated} of {causal.candidates} invocations ablated; "
+            f"{enables} enabling, {len(causal.edges) - enables} pre-empting edges")
+    if causal.truncated:
+        line += " (limit reached)"
+    return line + (f"; {error}" if error else "")

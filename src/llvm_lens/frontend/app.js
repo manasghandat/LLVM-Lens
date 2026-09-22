@@ -513,6 +513,10 @@ let STATE = {
   lastMode: "diff",          // last overview detail mode — restored when drilling in
   pipeBoth: true,            // Flow: draw both lanes, or just the selected one
   run: null,                 // IR lane: which run of a repeated pass is shown
+  causeAll: false,           // Causes graph: every enabling edge, not just direct
+  causePre: false,           // Causes graph: draw pre-empting edges too
+  causeFn: "",               // Causes graph: one function's invocations, or all
+  causeSel: null,            // Causes graph: selected node key
 };
 let CURRENT_MANIFEST = null;   // manifest.json
 let CURRENT_PASS = null;       // loaded chunk for STATE.passId
@@ -523,9 +527,9 @@ function currentPassSummary() { return passSummaries().find(p => p.id === STATE.
 // --- input cards (report.build_input_pass) ---
 const INPUT_MODES = ["ir", "src"];
 const OUTPUT_MODES = ["cfg", "ir", "blame", "src", "asm"];
-const GLOBAL_MODES = ["structure", "analyses", "pipeline"];
+const GLOBAL_MODES = ["structure", "analyses", "pipeline", "causes"];
 // Overviews are whole-report, so drilling into a pass must not return to them.
-const OVERVIEW_MODES = ["structure", "pipeline"];
+const OVERVIEW_MODES = ["structure", "pipeline", "causes"];
 
 function isInputCard() {
   const summary = currentPassSummary();
@@ -548,6 +552,7 @@ function hasAsm() {
 }
 
 function modeAvailable(mode) {
+  if (mode === "causes") return hasCausality();
   if (GLOBAL_MODES.includes(mode)) return true;
   if (mode === "isel") return hasIselMap();
   if (mode === "asm") return hasAsm();
@@ -769,6 +774,14 @@ function renderCtx() {
     document.getElementById("ctx").innerHTML =
       `flow · <span class="fn">${nodes}</span> nodes · `
       + `<span class="fn">${changed}</span> changed · ${passes.length} passes`;
+    return;
+  }
+  if (STATE.mode === "causes") {
+    const doc = CAUSAL && CAUSAL.doc;
+    document.getElementById("ctx").innerHTML = doc
+      ? `causes · <span class="fn">${doc.ablated}</span> ablated · `
+        + `<span class="fn">${doc.edges.length}</span> edges`
+      : "causes · reading the graph…";
     return;
   }
   if (STATE.mode === "blame") {
@@ -1276,6 +1289,7 @@ function renderMain() {
   split.innerHTML =
     mode === "structure" ? pipelineTreeHtml()
       : mode === "pipeline" ? pipePaneHtml()
+      : mode === "causes" ? causesPaneHtml()
       : mode === "cfg" ? cfgPaneHtml()
         : mode === "blame" ? blamePaneHtml()
           : mode === "diff" ? diffPaneHtml()
@@ -1292,6 +1306,7 @@ function renderMain() {
   if (first) first.style.flex = `0 0 ${(STATE.splitRatio * 100).toFixed(1)}%`;
   mountCfgGraphs();
   mountPipeGraphs();
+  mountCausesGraph();
   updateViewHead();  // after the panes: it reads what they rendered
 }
 
@@ -1378,6 +1393,153 @@ function applyIselHighlight(scrollTo) {
   if (target) scrollRowIntoView(target);
 }
 
+/* --- causality (causality.py, data/causality.json) ------------------------ */
+
+// Which invocation enabled or pre-empted which, found by re-running opt with
+// each one skipped. A node is one invocation; its runs are lane-A run indices.
+let CAUSAL = null;   // { doc, ins, outs, byRun, back } once loaded
+
+function loadCausality() {
+  if (!((CURRENT_MANIFEST || {}).metadata || {}).hasCausality) return Promise.resolve(null);
+  return loadJSON("causality").catch(() => null).then(doc => {
+    if (!doc) return null;
+    const ins = doc.nodes.map(() => []), outs = doc.nodes.map(() => []);
+    doc.edges.forEach(e => { outs[e.from].push(e); ins[e.to].push(e); });
+    const byRun = new Map();
+    doc.nodes.forEach((n, i) => (n.changedRuns.length ? n.changedRuns : n.runs)
+      .forEach(r => { if (!byRun.has(r)) byRun.set(r, []); byRun.get(r).push(i); }));
+    CAUSAL = { doc, ins, outs, byRun, back: new Map() };
+    return CAUSAL;
+  });
+}
+
+// The invocations this card answers for: the run on show, or every run it has.
+function causalNodes() {
+  const s = currentPassSummary();
+  if (!CAUSAL || !s || s.lane !== "ir" || s.isInput) return [];
+  const on = cardRun();
+  const runs = on != null ? [on] : (s.runs || [s.runIndex]);
+  const seen = new Set();
+  runs.forEach(r => (CAUSAL.byRun.get(r) || []).forEach(i => seen.add(i)));
+  return [...seen].filter(i => CAUSAL.ins[i].length || CAUSAL.outs[i].length
+    || CAUSAL.doc.nodes[i].changed);
+}
+
+// The longest chain of direct enablers ending at node *i*, oldest first.
+function causalChain(i) {
+  const memo = CAUSAL.back;
+  if (memo.has(i)) return memo.get(i);
+  memo.set(i, [i]);  // a guard; the edges only point forward in the pipeline
+  let best = [];
+  CAUSAL.ins[i].filter(e => e.kind === "enables" && e.direct).forEach(e => {
+    const path = causalChain(e.from);
+    if (path.length > best.length) best = path;
+  });
+  memo.set(i, [...best, i]);
+  return memo.get(i);
+}
+
+function causalLabel(n) {
+  return n.unit.replace(/^function /, "");
+}
+
+function causalRowHtml(i, e) {
+  const n = CAUSAL.doc.nodes[i];
+  const run = (n.changedRuns.length ? n.changedRuns : n.runs)[0];
+  const fn = e && e.fns.length ? e.fns[0] : null;
+  const where = e && e.fns.length ? e.fns.join(", ") : causalLabel(n);
+  const via = e && e.kind === "enables" && !e.direct
+    ? '<span class="ckind" title="also explained by a longer chain">via</span>' : "";
+  return `<div class="brow${run == null ? " bnone" : ""}"`
+    + `${run == null ? "" : ` data-crun="${run}"`} data-cname="${escapeHtml(n.pass)}"`
+    + `${fn ? ` data-cfn="${escapeHtml(fn)}"` : ""} title="${escapeHtml(n.key)}">`
+    + `<span class="brun">${run == null ? "new" : run}</span>`
+    + `<span class="bname">${escapeHtml(n.name)} <span class="muted">on ${escapeHtml(where)}</span></span>`
+    + via + "</div>";
+}
+
+function causalListHtml(title, note, rows) {
+  if (!rows.length) return "";
+  return `<h3>${title} (${rows.length}) <span class="muted">${note}</span></h3>`
+    + `<div class="cgroup">${rows.join("")}</div>`;
+}
+
+function causalNodeHtml(i) {
+  const n = CAUSAL.doc.nodes[i];
+  const ins = CAUSAL.ins[i], outs = CAUSAL.outs[i];
+  // Direct first: an edge a longer chain explains is still true, but secondary.
+  const order = list => [...list].sort((a, b) => b.direct - a.direct);
+  const verdict = n.error ? `<span class="cverdict bad">${escapeHtml(n.error.split("\n")[0])}</span>`
+    : n.finalDiffers === true ? '<span class="cverdict">without it, the final IR differs</span>'
+    : n.finalDiffers === false ? '<span class="cverdict dim" title="later passes redo its work">'
+      + "without it, the final IR is identical</span>"
+    : n.changed ? '<span class="cverdict dim">not ablated (limit reached)</span>' : "";
+  const chain = causalChain(i);
+  const chainHtml = chain.length > 1
+    ? `<h3>chain <span class="muted">each run needed the one before it</span></h3>`
+      + `<div class="cchain">${chain.map((j, k) => {
+          const m = CAUSAL.doc.nodes[j];
+          const run = (m.changedRuns.length ? m.changedRuns : m.runs)[0];
+          return `${k ? '<span class="carrow">→</span>' : ""}`
+            + `<span class="cstep${j === i ? " here" : ""}"`
+            + `${j === i || run == null ? "" : ` data-crun="${run}" data-cname="${escapeHtml(m.pass)}"`}`
+            + ` title="${escapeHtml(causalLabel(m))}">${run == null ? "" : run + " "}${escapeHtml(m.name)}</span>`;
+        }).join("")}</div>`
+    : "";
+  return `<div class="cnode">
+      <div class="chead"><span class="cname">${escapeHtml(n.name)}</span>
+        <span class="muted">on ${escapeHtml(causalLabel(n))}</span>${verdict}</div>
+      ${chainHtml}
+      ${causalListHtml("enabled by", "skip one, and this run changes nothing",
+        order(ins.filter(e => e.kind === "enables")).map(e => causalRowHtml(e.from, e)))}
+      ${causalListHtml("enables", "skip this run, and these change nothing",
+        order(outs.filter(e => e.kind === "enables")).map(e => causalRowHtml(e.to, e)))}
+      ${causalListHtml("pre-empts", "skip this run, and these do its work instead",
+        outs.filter(e => e.kind === "preempts").map(e => causalRowHtml(e.to, e)))}
+      ${causalListHtml("pre-empted by", "skip one, and this run does its work",
+        ins.filter(e => e.kind === "preempts").map(e => causalRowHtml(e.from, e)))}
+    </div>`;
+}
+
+function causesBodyHtml() {
+  const nodes = causalNodes();
+  if (!nodes.length) return "";
+  const s = currentPassSummary();
+  const others = cardRun() == null ? 0 : (s.runs || [])
+    .filter(r => r !== cardRun() && (CAUSAL.byRun.get(r) || []).length).length;
+  const head = others
+    ? `<p class="muted">run ${cardRun()} of this pass; ${others} other run${others > 1 ? "s" : ""}`
+      + " of it have causes of their own (pick one with the run menu)</p>" : "";
+  return head + nodes.map(causalNodeHtml).join("");
+}
+
+function causalCount() {
+  return causalNodes().reduce((sum, i) => sum + CAUSAL.ins[i].length + CAUSAL.outs[i].length, 0);
+}
+
+// A run index -> its card; a run that changed nothing has none, so its pass's.
+function cardForRun(run, name) {
+  const cards = passSummaries().filter(p => p.lane === "ir" && !p.isInput);
+  return cards.find(p => run != null && (p.runs || []).includes(run))
+    || cards.find(p => p.name === name) || null;
+}
+
+async function gotoRun(run, name, fn) {
+  const card = cardForRun(run, name);
+  if (!card) return;
+  if (STATE.lane !== card.lane) {
+    STATE.lane = card.lane;
+    renderLaneTabs();
+  }
+  await selectPass(card.id);
+  if (STATE.passId !== card.id) return;
+  if (((CURRENT_PASS || {}).runs || []).some(r => r.runIndex === run)) STATE.run = run;
+  if (fn && fnNames().includes(fn)) STATE.fn = fn;
+  renderFnList();
+  renderMain();
+  renderBottom();
+}
+
 /* --- bottom panel ---------------------------------------------------------- */
 
 // [{ tab, count }] -- the count is what the tab holds, shown before you open it.
@@ -1389,6 +1551,8 @@ function bottomTabs() {
   if (regMap) tabs.push({ tab: "RegMap", count: Object.keys(regMap).length });
   const sites = CURRENT_PASS && ((CURRENT_PASS.spillSites || {})[STATE.fn] || []);
   if (sites && sites.length) tabs.push({ tab: "Spills", count: sites.length });
+  const causes = causalCount();
+  if (causes) tabs.push({ tab: "Causes", count: causes });
   return tabs;
 }
 
@@ -1452,6 +1616,7 @@ function bottomBodyHtml() {
         .map(([v, p]) => `<tr><td>%${escapeHtml(v)}</td><td>${escapeHtml(p)}</td></tr>`)
         .join("") + `</table>`;
   }
+  if (STATE.bottomTab === "Causes") return causesBodyHtml();
   if (STATE.bottomTab === "Spills") {
     const sites = (d.spillSites || {})[STATE.fn] || [];
     if (!sites.length) return "";
@@ -2460,6 +2625,210 @@ function pipeStyle() {
   ];
 }
 
+/* --- causes graph: which invocation enabled which ------------------------- */
+
+function hasCausality() {
+  return !!(((CURRENT_MANIFEST || {}).metadata || {}).hasCausality);
+}
+
+let CAUSE_PENDING = null;  // what the pane asked mountCausesGraph to draw
+
+function causeRun(n) {
+  return (n.changedRuns.length ? n.changedRuns : n.runs)[0];
+}
+
+function causeFnOf(n) {
+  const m = /@([^\s]+)$/.exec(n.unit);
+  return m ? m[1] : n.unit;
+}
+
+// The edges the chips ask for, and every node one of them touches.
+function causeSubgraph() {
+  const doc = CAUSAL.doc;
+  const fn = STATE.causeFn;
+  const edges = doc.edges.filter(e => {
+    if (e.kind === "enables" ? !(e.direct || STATE.causeAll) : !STATE.causePre) return false;
+    return !fn || e.fns.includes(fn);
+  });
+  const nodes = new Set();
+  edges.forEach(e => { nodes.add(e.from); nodes.add(e.to); });
+  return { nodes: [...nodes].sort((a, b) => a - b), edges };
+}
+
+function causesPaneHtml() {
+  if (!CAUSAL) {
+    loadCausality().then(doc => { if (doc && STATE.mode === "causes") renderMain(); });
+    return pane("CAUSES", "", "", '<div class="cfg-empty">(reading the causality graph…)</div>');
+  }
+  const doc = CAUSAL.doc;
+  const fns = [...new Set(doc.edges.flatMap(e => e.fns))].sort();
+  if (STATE.causeFn && !fns.includes(STATE.causeFn)) STATE.causeFn = "";
+  const sub = causeSubgraph();
+  const tab = (key, label, on, title) =>
+    `<button class="ptab${on ? " active" : ""}" data-cause="${key}" title="${title}">${label}</button>`;
+  const chips = `<span class="splt">
+      ${tab("direct", "direct", !STATE.causeAll, "only enabling edges no longer chain explains")}
+      ${tab("all", "all", STATE.causeAll, "every enabling edge")}
+    </span>
+    <span class="splt">${tab("pre", "pre-empts", STATE.causePre, "also draw what each run pre-empted")}</span>
+    <select class="ptab" id="causeFn" title="only edges about one function">
+      <option value="">all functions</option>
+      ${fns.map(f => `<option value="${escapeHtml(f)}"${f === STATE.causeFn ? " selected" : ""}>`
+        + `${escapeHtml(f)}</option>`).join("")}
+    </select>`;
+  const stat = `${sub.nodes.length} invocations · ${sub.edges.length} edges`
+    + (doc.truncated ? ` · ${doc.ablated} of ${doc.candidates} ablated` : "");
+  if (!sub.edges.length) {
+    return pane("CAUSES", chips, stat,
+      '<div class="cfg-empty">(no edges under the current filter)</div>');
+  }
+  CAUSE_PENDING = sub;
+  const legend = `<div class="pipe-legend">
+      <span class="pl-it"><span class="pl-ln" style="border-top:2px solid ${PIPE_COLORS.trace}"></span>`
+      + `<b>enables</b><em>skip the left, and the right changes nothing</em></span>
+      <span class="pl-it"><span class="pl-ln" style="border-top:2px dashed ${PIPE_COLORS.warn}"></span>`
+      + `<b>pre-empts</b><em>skip the left, and the right does its work</em></span>
+      <span class="pl-it"><span class="pl-sw" style="border-color:${PIPE_COLORS.nodeBd}"></span>`
+      + `<b>final IR differs</b><em>without it</em></span>
+      <span class="pl-it"><span class="pl-sw" style="border-color:${PIPE_COLORS.ghostBd};border-style:dashed"></span>`
+      + `<b>redundant</b><em>final IR identical without it</em></span>
+    </div>`;
+  return pane("CAUSES", chips, stat,
+    `<div class="pipe-wrap">${legend}${pipeBodyHtml("cause", "causality · opt, in pipeline order")}</div>`);
+}
+
+function causeDetailHtml(i) {
+  if (i == null) return "";
+  const n = CAUSAL.doc.nodes[i];
+  const verdict = n.error ? n.error.split("\n")[0]
+    : n.finalDiffers === true ? "final IR differs without it"
+    : n.finalDiffers === false ? "redundant: final IR identical without it"
+    : n.changed ? "not ablated" : "changed nothing here";
+  const count = kind => CAUSAL.ins[i].filter(e => e.kind === kind).length + " in · "
+    + CAUSAL.outs[i].filter(e => e.kind === kind).length + " out";
+  const chain = causalChain(i);
+  const run = causeRun(n);
+  const stats = [["run", run == null ? "not in baseline" : String(run)], ["verdict", verdict],
+    ["enables", count("enables")], ["pre-empts", count("preempts")]];
+  if (chain.length > 1) stats.push(["chain", chain.map(j => CAUSAL.doc.nodes[j].name).join(" → ")]);
+  const cells = stats.map(([k, v]) =>
+    `<span class="pm"><b>${escapeHtml(k)}</b>${escapeHtml(v)}</span>`).join("");
+  const acts = run == null ? "" : ["diff", "cfg", "ir"].map(m =>
+    `<button class="pipe-act" data-cause-open="${m}">open ${m === "ir" ? "IR" : m === "cfg" ? "CFG" : "Diff"}</button>`).join("");
+  return `<div class="pipe-detail-in">
+      <div class="pipe-detail-head">${escapeHtml(`${run == null ? "" : pipeIdx(run) + "  "}${n.name}`)}
+        <span class="muted">on ${escapeHtml(causalLabel(n))}</span></div>
+      <div class="pipe-detail-stats">${cells}</div>
+      <div class="pipe-detail-acts">${acts}</div>
+    </div>`;
+}
+
+function mountCausesGraph() {
+  const el = document.querySelector('#split .pipe-cy[data-idx="cause"]');
+  const sub = CAUSE_PENDING;
+  CAUSE_PENDING = null;
+  if (!el || !sub || !CAUSAL) return;
+  const canvas = el.querySelector(".pipe-cy-canvas");
+  const detail = el.querySelector(".pipe-cy-detail");
+  if (typeof cytoscape !== "function") {
+    el.innerHTML = '<p class="cfg-empty">(graph library failed to load)</p>';
+    return;
+  }
+  const c = PIPE_COLORS;
+  const nodes = CAUSAL.doc.nodes;
+  const elements = sub.nodes.map(i => {
+    const n = nodes[i];
+    const run = causeRun(n);
+    const cls = [n.finalDiffers === false ? "redundant" : "", n.changed ? "" : "idle",
+      n.error ? "err" : ""].filter(Boolean).join(" ");
+    return { data: { id: "c" + i, idx: i,
+      label: `${run == null ? "new" : pipeIdx(run)} ${n.name}\n${causeFnOf(n)}` }, classes: cls };
+  });
+  sub.edges.forEach((e, k) => elements.push({
+    data: { id: "e" + k, source: "c" + e.from, target: "c" + e.to },
+    classes: e.kind === "preempts" ? "pre" : (e.direct ? "direct" : "indirect"),
+  }));
+
+  const cy = cytoscape({
+    container: canvas, elements,
+    minZoom: 0.1, maxZoom: 4, boxSelectionEnabled: false, autoungrabify: true,
+    style: [
+      { selector: "node", style: {
+        "shape": "round-rectangle", "width": "label", "height": "label", "padding": "8px",
+        "background-color": c.nodeFg, "border-color": c.nodeBd, "border-width": 1.5,
+        "label": "data(label)", "color": c.ink, "font-family": PIPE_MONO,
+        "font-size": 12, "text-wrap": "wrap", "text-valign": "center", "text-halign": "center",
+      }},
+      { selector: "node.redundant", style: {
+        "border-style": "dashed", "border-color": c.ghostBd, "color": c.dim }},
+      { selector: "node.idle", style: {
+        "background-color": c.ghostFg, "border-color": c.ghostBd, "color": c.ghost }},
+      { selector: "node.err", style: { "border-color": c.del }},
+      { selector: "edge", style: {
+        "curve-style": "bezier", "width": 1.6, "arrow-scale": 0.9,
+        "line-color": c.trace, "target-arrow-color": c.trace, "target-arrow-shape": "triangle",
+      }},
+      { selector: "edge.indirect", style: {
+        "line-color": c.soft, "target-arrow-color": c.soft, "line-style": "dashed", "width": 1 }},
+      { selector: "edge.pre", style: {
+        "line-color": c.warn, "target-arrow-color": c.warn, "line-style": "dashed",
+        "target-arrow-shape": "tee", "width": 1.3 }},
+      { selector: ".faded", style: { "opacity": 0.15 }},
+      { selector: "node.sel", style: { "border-color": c.trace, "border-width": 2.5 }},
+      { selector: "node.hl", style: { "border-color": c.trace }},
+    ],
+  });
+  // Every edge points forward in the pipeline, so left to right is run order.
+  cy.layout({ name: "dagre", rankDir: "LR", nodeSep: 14, rankSep: 46, edgeSep: 8 }).run();
+  cy.fit(undefined, 24);
+  if (cy.zoom() > 1.2) cy.zoom(1.2);
+  if (cy.zoom() < 0.8) {  // too small to read: open on the start of the pipeline
+    const z = 0.8, bb = cy.elements().boundingBox();
+    cy.zoom(z);
+    cy.pan({ x: 24 - bb.x1 * z, y: 24 - bb.y1 * z });
+  } else {
+    cy.center();
+  }
+
+  // Selecting a node lights up the runs it hangs off and the runs hanging off
+  // it, through the edges drawn; everything else steps back.
+  const select = i => {
+    cy.elements().removeClass("faded sel hl");
+    STATE.causeSel = i == null ? null : nodes[i].key;
+    const n = i == null ? null : cy.$id("c" + i);
+    if (!n || n.empty()) { detail.innerHTML = ""; return; }
+    const lit = n.union(n.predecessors()).union(n.successors());
+    cy.elements().not(lit).addClass("faded");
+    lit.nodes().addClass("hl");
+    n.addClass("sel");
+    detail.innerHTML = causeDetailHtml(i);
+  };
+  cy.on("tap", "node", evt => select(evt.target.data("idx")));
+  cy.on("tap", evt => { if (evt.target === cy) select(null); });
+
+  // Reopen on the node picked last, or on the card on show.
+  const keep = STATE.causeSel == null ? -1 : nodes.findIndex(n => n.key === STATE.causeSel);
+  const here = keep >= 0 ? keep : causalNodes()[0];
+  if (here != null && sub.nodes.includes(here)) select(here);
+
+  detail.addEventListener("click", evt => {
+    const b = evt.target.closest("[data-cause-open]");
+    if (!b || STATE.causeSel == null) return;
+    const n = nodes.find(x => x.key === STATE.causeSel);
+    STATE.mode = STATE.lastMode = b.dataset.causeOpen;
+    gotoRun(causeRun(n), n.pass, n.entities[0] || null);
+  });
+
+  const zoomEl = el.querySelector(".pipe-cy-zoom");
+  if (zoomEl) {
+    const showZoom = () => { zoomEl.textContent = "ZOOM ×" + cy.zoom().toFixed(2); };
+    cy.on("zoom", showZoom);
+    showZoom();
+  }
+  CFG_INSTANCES.add(cy);
+  el._cy = cy;
+}
+
 /* --- boot ---------------------------------------------------------------- */
 
 /* --- command sheet --------------------------------------------------------- */
@@ -2537,7 +2906,8 @@ function resizeGraphs() {
 const UI_VALUES = {
   lane: ["lane", ["ir", "mir"]],
   mode: ["mode",
-    ["cfg", "diff", "ir", "blame", "src", "asm", "isel", "analyses", "structure", "pipeline"]],
+    ["cfg", "diff", "ir", "blame", "src", "asm", "isel", "analyses", "structure", "pipeline",
+      "causes"]],
   orientation: ["orientation", ["side", "stack"]],
 };
 
@@ -2579,6 +2949,8 @@ async function boot() {
   renderBottom();
   const first = manifest.passes.find(p => p.lane === STATE.lane);
   if (first) selectPass(first.id);
+  // The drawer's tabs are drawn before it lands; redraw them once it has.
+  loadCausality().then(doc => { if (doc) renderBottom(); });
 }
 
 /* --- controls --------------------------------------------------------------- */
@@ -2634,9 +3006,15 @@ document.getElementById("splitStack").addEventListener("click", () => {
 // Which run of a repeated pass to read is picked from a menu, so it reports
 // through `change`; a click on it would read the value before the pick lands.
 document.getElementById("split").addEventListener("change", evt => {
+  if (evt.target.id === "causeFn") {
+    STATE.causeFn = evt.target.value;
+    renderMain();
+    return;
+  }
   if (evt.target.id !== "runPick") return;
   STATE.run = Number(evt.target.value);
   renderMain();
+  renderBottom();  // the Causes tab is per run
 });
 
 document.getElementById("split").addEventListener("click", evt => {
@@ -2652,6 +3030,16 @@ document.getElementById("split").addEventListener("click", evt => {
     // A click selects that graph alone; only the file opens on several.
     if (STATE.analysisTypes.length === 1 && STATE.analysisTypes[0] === t) return;  // already alone
     STATE.analysisTypes = [t];
+    renderMain();
+    return;
+  }
+
+  // Causes: which edges to draw, and over which function.
+  const cause = evt.target.closest(".ptab[data-cause]");
+  if (cause) {
+    const v = cause.dataset.cause;
+    if (v === "direct" || v === "all") STATE.causeAll = v === "all";
+    if (v === "pre") STATE.causePre = !STATE.causePre;
     renderMain();
     return;
   }
@@ -2751,6 +3139,14 @@ document.getElementById("split").addEventListener("click", evt => {
   STATE.srcLine = STATE.srcLine === line ? null : line;
   // Scroll the *other* pane: the side you clicked is already where you want it.
   applySrcHighlight(row.closest(".cmapside") ? "irmap" : "cmapside");
+});
+
+// Causes: a run in a list or a chain jumps to it, on the function it names.
+document.getElementById("bottomBody").addEventListener("click", evt => {
+  const row = evt.target.closest("[data-crun], [data-cname]");
+  if (!row || row.classList.contains("bnone")) return;
+  gotoRun(row.dataset.crun != null ? +row.dataset.crun : null,
+    row.dataset.cname, row.dataset.cfn || STATE.fn);
 });
 
 // Status strip: a badge opens the drawer on that tab, anywhere else toggles it.

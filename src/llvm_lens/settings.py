@@ -90,13 +90,30 @@ SCHEMA: dict[str, Any] = {
         "opt": Field([], "Extra arguments appended to the opt command.", kind="list"),
         "llc": Field([], "Extra arguments appended to the llc command.", kind="list"),
     },
+    "causality": {
+        "enabled": Field(
+            False, "Find which pass invocations enabled or pre-empted which, by "
+            "re-running opt once per invocation that changed the IR, with it skipped.",
+            kind="bool",
+        ),
+        "limit": Field(
+            400, "Most invocations to ablate (one opt run each).", kind="int",
+        ),
+        "jobs": Field(
+            None, "Ablation runs at once. Null means one per CPU.", kind="int",
+        ),
+        "plugin": Field(
+            None, "Prebuilt provenance tracker .so, instead of building it.",
+            kind="path",
+        ),
+    },
     "ui": {
         "lane": Field("ir", "Lane open on load.", kind="enum", choices=("ir", "mir")),
         "mode": Field(
             "diff", "View open on load.",
             kind="enum",
             choices=("cfg", "diff", "ir", "blame", "src", "isel", "analyses",
-                     "structure", "pipeline"),
+                     "structure", "pipeline", "causes"),
         ),
         "analysis": Field(
             ("pdt",), "Graphs view: which analysis graphs to draw (a list, or 'all').",
@@ -188,6 +205,10 @@ class Settings:
     clang_args: tuple[str, ...] = ()
     opt_args: tuple[str, ...] = ()
     llc_args: tuple[str, ...] = ()
+    causality: bool = False
+    causality_limit: int = 400
+    causality_jobs: int | None = None
+    causality_plugin: str | None = None
     ui: Ui = field(default_factory=Ui)
     # The file these came from, for the manifest and the error messages.
     config_file: str | None = None
@@ -387,6 +408,10 @@ def _build(flat: dict[str, Any], path: Path | None, origin: str | None) -> Setti
         clang_args=value("flags.clang"),
         opt_args=value("flags.opt"),
         llc_args=value("flags.llc"),
+        causality=value("causality.enabled"),
+        causality_limit=value("causality.limit"),
+        causality_jobs=value("causality.jobs"),
+        causality_plugin=_resolve(base, value("causality.plugin")),
         ui=Ui(
             lane=value("ui.lane"),
             mode=value("ui.mode"),

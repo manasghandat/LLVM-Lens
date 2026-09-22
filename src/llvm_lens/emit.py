@@ -240,6 +240,7 @@ def emit_report(
     frontend_dir: str | Path,
     ai_config: dict[str, Any] | None = None,
     blame: dict[str, dict[str, Any]] | None = None,
+    causality: dict[str, Any] | None = None,
 ) -> Path:
     """Write the report into *report_dir*; returns the manifest path."""
     report_dir = Path(report_dir)
@@ -264,6 +265,16 @@ def emit_report(
         if blame and lane in blame:
             continue
         for stale in (data_dir / f"blame-{lane}.json", data_dir / f"blame-{lane}.js"):
+            stale.unlink(missing_ok=True)
+
+    # Same rule as blame: no graph this build means no graph in the report.
+    if causality is not None:
+        _write_json_plus_script(
+            data_dir / "causality", causality,
+            'window.__LLVM_LENS_DATA__["causality"]',
+        )
+    else:
+        for stale in (data_dir / "causality.json", data_dir / "causality.js"):
             stale.unlink(missing_ok=True)
 
     manifest = _manifest_json(passes, metadata)

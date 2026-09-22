@@ -50,6 +50,7 @@ llvm_lens = [
     "frontend/style.css",
     "frontend/vendor/*.js",
     "samples/*.c",
+    "plugins/*.cpp",
 ]
 
 [tool.pytest.ini_options]

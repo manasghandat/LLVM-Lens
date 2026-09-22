@@ -15,6 +15,14 @@ behavior across IR and Machine IR.
   or IR view can be clicked to see its whole chain — every pass that touched
   the line since the input, oldest first, each tagged created, rewritten or
   renamed. Clicking a pass in the chain jumps to its card.
+- **Pass causality** (`--causality`) — which pass invocation made a later one
+  able to do its work. The build re-runs `opt` once per invocation that
+  changed the IR, with only that invocation skipped: a later invocation that
+  stops changing the IR was *enabled* by it (loop-rotate → loop-simplify →
+  indvars), one that starts was *pre-empted* by it (it did that pass's work
+  first). The Causes view draws the whole graph beside Flow; the Causes tab
+  shows one run's chain, enablers and effects, and whether the final IR
+  differs without it.
 - **Source correlation** — every IR/MIR line maps back to its C/C++ source line
   when the input carries debug info.
 - **Custom passes** — `--load-pass-plugin`, `--load`, and `--custom-pass` load
@@ -85,7 +93,14 @@ llvm-lens sample.c -o /tmp/lens                # somewhere other than ./report
 llvm-lens demo.ll --target aarch64-linux-gnu   # another machine's Machine IR
 llvm-lens demo.ll --load-pass-plugin ./libMBAAdd.so --custom-pass mba-add
 llvm-lens sample.c --no-ai                     # drop the AI key before sharing
+llvm-lens --sample vectorize --causality       # which pass enabled which
 ```
+
+`--causality` builds `src/llvm_lens/plugins/ProvenanceTracker.cpp` with the
+toolchain's `clang++` and `llvm-config` on first use (cached under
+`~/.cache/llvm-lens`), then runs one `opt` per invocation that changed the IR,
+in parallel; `--causality-limit` caps how many. The same analysis prints as
+text with `python -m llvm_lens.causality input.ll --passes 'default<O2>'`.
 
 `--passes` takes any new-pass-manager pipeline, `function(mem2reg,gvn)` included,
 so you can decide how much of the pipeline the report covers.
