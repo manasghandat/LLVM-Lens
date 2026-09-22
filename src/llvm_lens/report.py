@@ -432,7 +432,9 @@ def lane_b_passes(
     mir_table: DebugTable | None = None,
 ) -> tuple[list[ReportPass], list[PassNode], str | None, Timeline]:
     """Lane B (llc): its cards, the pass-manager tree, and the MIR timeline."""
-    snapshots = parse_mir_snapshots(stderr)
+    # After-dumps only: the report shows post-pass state, and a -print-before
+    # from the user's flags would otherwise fold into a pass's group.
+    snapshots = [s for s in parse_mir_snapshots(stderr) if s.when == "after"]
     nodes, pass_arguments = parse_pass_structure(stderr)
     machine_analyses = analyses_by_pass(nodes)
     time_blocks = parse_time_passes(stderr)
@@ -517,7 +519,10 @@ def lane_b_passes(
 
     _attach_reg_maps(passes, order, by_id, fn_seq)
     if passes and order:
-        _attach_isel(passes[0], by_id[order[0]], parse_ir_dumps(stderr))
+        # After-only, like the snapshots above: pre-ISel IR is what the IR half
+        # left behind, never a before-dump.
+        isel_ir = [d for d in parse_ir_dumps(stderr) if d.when == "after"]
+        _attach_isel(passes[0], by_id[order[0]], isel_ir)
     if passes and asm_text:
         passes[-1].asm = asm_text
         _attach_asm_map(passes[-1], asm_text)

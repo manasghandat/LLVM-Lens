@@ -1,14 +1,21 @@
-"""Parse llc's -print-after-all machine-code dumps (backend lane)."""
+"""Parse llc's machine-code dumps (backend lane), before or after a pass."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Machine dump header; note the "# " prefix and trailing ":" vs IR headers.
-MACHINE_HEADER_RE = re.compile(r"^# \*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*\*:$")
+# Group 1 is the direction, 2 the display name, 3 the canonical pass id.
+MACHINE_HEADER_RE = re.compile(
+    r"^(?:; )?# \*\*\* IR Dump (Before|After) (.+?) \(([\w-]+)\) \*\*\*:$"
+)
 # The same header without the "# " prefix and the trailing ":" is an IR dump.
-IR_HEADER_RE = re.compile(r"^\*\*\* IR Dump After (.+?) \(([\w-]+)\) \*\*\*$")
+# Asked for by name rather than by -print-all, the header arrives commented out
+# ("; *** ...") and can read "Before", so both are accepted.
+IR_HEADER_RE = re.compile(
+    r"^(?:; )?\*\*\* IR Dump (Before|After) (.+?) \(([\w-]+)\) \*\*\*$"
+)
 # -time-passes writes its summary into the same stream; it ends the last dump.
 REPORT_RE = re.compile(r"^={3,}-{3,}")
 FUNC_START_RE = re.compile(r"^# Machine code for function (\S+): (.+)$")
@@ -82,6 +89,10 @@ class MirSnapshot:
     pass_id: str  # e.g. "x86-isel"
     functions: dict[str, MachineFunction] = field(default_factory=dict)
     line: int = 0  # 1-based line of the dump header in the stream
+    when: str = "after"  # "before" | "after"
+    # The dump verbatim, header line included. `MachineFunction.text` drops
+    # lines its model has no room for (successors:), so use this to quote MIR.
+    text: str = ""
 
 
 def _parse_function(lines: list[str]) -> MachineFunction:
@@ -153,24 +164,27 @@ class IrDump:
     pass_id: str
     text: str
     line: int = 0  # 1-based line of the dump header in the stream
+    when: str = "after"  # "before" | "after"
 
 
 def parse_ir_dumps(stderr: str) -> list[IrDump]:
     dumps: list[IrDump] = []
-    header: tuple[str, str, int] | None = None
+    header: tuple[str, str, str, int] | None = None  # name, id, when, line
     body: list[str] = []
 
     def flush() -> None:
         nonlocal header
         if header is not None:
-            dumps.append(IrDump(header[0], header[1], "\n".join(body), header[2]))
+            dumps.append(IrDump(header[0], header[1], "\n".join(body), header[3], header[2]))
         header = None
 
     for line_no, line in enumerate(stderr.splitlines(), start=1):
         match = IR_HEADER_RE.match(line)
         if match:
             flush()
-            header, body = (match.group(1), match.group(2), line_no), []
+            header, body = (
+                match.group(2), match.group(3), match.group(1).lower(), line_no
+            ), []
             continue
         if header is None:
             continue
@@ -183,11 +197,13 @@ def parse_ir_dumps(stderr: str) -> list[IrDump]:
 
 
 def parse_mir_snapshots(stderr: str) -> list[MirSnapshot]:
-    """Parse an llc -print-after-all stderr stream into per-pass MIR snapshots."""
+    """Parse an llc dump stream (-print-after-all or a targeted -print-*) into
+    per-pass MIR snapshots, each keeping its body in `text` verbatim."""
     snapshots: list[MirSnapshot] = []
     current: MirSnapshot | None = None
     functions: dict[str, MachineFunction] = {}
     func_lines: list[str] | None = None  # None = between functions
+    body: list[str] = []
 
     def flush_function() -> None:
         nonlocal func_lines
@@ -195,17 +211,31 @@ def parse_mir_snapshots(stderr: str) -> list[MirSnapshot]:
             functions[func_lines[0].split(":", 1)[0].split()[-1]] = _parse_function(func_lines)
         func_lines = None
 
+    def flush_snapshot() -> None:
+        nonlocal current
+        flush_function()
+        if current is not None:
+            snapshots.append(replace(current, text="\n".join(body)))
+        current = None
+
     for line_no, line in enumerate(stderr.splitlines(), start=1):
         match = MACHINE_HEADER_RE.match(line)
         if match:
-            flush_function()
-            if current is not None:
-                snapshots.append(current)
-            current = MirSnapshot(match.group(1), match.group(2), {}, line_no)
+            flush_snapshot()
+            # The header opens the body so `text` is the slice as llc wrote it.
+            body = [line]
+            current = MirSnapshot(
+                match.group(2), match.group(3), {}, line_no, match.group(1).lower()
+            )
             functions = current.functions
             continue
         if current is None:
             continue
+        if REPORT_RE.match(line):
+            # -time-passes' table is not part of any dump.
+            flush_snapshot()
+            continue
+        body.append(line)
         match = FUNC_START_RE.match(line)
         if match:
             flush_function()
@@ -217,10 +247,32 @@ def parse_mir_snapshots(stderr: str) -> list[MirSnapshot]:
             continue
         if func_lines is not None:
             func_lines.append(line)
-    flush_function()
-    if current is not None:
-        snapshots.append(current)
+    flush_snapshot()
     return snapshots
+
+
+def split_machine_functions(text: str) -> dict[str, str]:
+    """Split a machine dump body into {function name: its verbatim text}.
+
+    Each entry runs from "# Machine code for function X: ..." through the
+    matching "# End machine code for function X.", inclusive.
+    """
+    functions: dict[str, str] = {}
+    lines = text.splitlines()
+    name: str | None = None
+    start = 0
+    for index, line in enumerate(lines):
+        if name is None:
+            match = FUNC_START_RE.match(line)
+            if match:
+                name, start = match.group(1), index
+            continue
+        if FUNC_END_RE.match(line):
+            functions[name] = "\n".join(lines[start : index + 1])
+            name = None
+    if name is not None:  # unterminated dump: keep what there is
+        functions[name] = "\n".join(lines[start:])
+    return functions
 
 
 def vreg_to_physreg(pre: MachineFunction, post: MachineFunction) -> dict[str, str]:

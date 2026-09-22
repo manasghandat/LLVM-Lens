@@ -223,6 +223,56 @@ Target a specific LLVM install:
 LLVM_LENS_BIN_DIR=/usr/lib/llvm-22/bin llvm-lens --sample
 ```
 
+### Use it as a library
+
+The report is one way to ask about a pass. `llvm_lens.snapshot()` is the other:
+it returns the IR, or the machine IR, immediately before or after a named pass,
+for one file, as data.
+
+```python
+import llvm_lens
+
+snap = llvm_lens.snapshot("sample.c", "greedy", when="after")
+print(snap.format)              # "mir"
+print(snap.functions["main"])   # main's machine code, exactly as llc printed it
+
+# The IR lane runs opt instead, over a pipeline of your choosing.
+snap = llvm_lens.snapshot("sample.c", "instcombine", when="before",
+                          lane="ir", passes="default<O2>")
+```
+
+`when` is `"before"` or `"after"` — one value, so the two are mutually
+exclusive by construction. `functions` maps each function name to its own text,
+verbatim: nothing is re-rendered, so lines the report's structural model does
+not track (a machine block's `successors:`, say) are still there. `text` is the
+run's whole dump, `format` says whether that text is machine code or IR, and
+`cmd` and `stderr_path` say how it was produced.
+
+Name a pass the way LLVM does, by the id it prints in parentheses. That is often
+not the obvious word — the register allocator is `greedy`, not `regalloc`, and
+instruction selection is `x86-isel` on x86-64 — so ask what a file actually
+runs:
+
+```python
+for pass_id, display_name in llvm_lens.list_machine_passes("sample.c"):
+    print(pass_id, "—", display_name)
+```
+
+A pass can run more than once. `instcombine` runs 24 times over the bundled
+sample under `default<O2>`, each run with its own before and after state, and a
+machine pass that appears twice in llc's pipeline dumps every function twice.
+Every invocation is kept: `snap.runs[i].text` and `.functions` are that
+invocation's, while `snap.text` and `snap.functions` resolve to the first run
+for `"before"` and the last for `"after"`. Pass `occurrence=` to pick another.
+
+A name that matched no dump raises `SnapshotError` rather than returning an
+empty answer. Both tools exit 0 in that case, having printed nothing, so the
+silence would otherwise be indistinguishable from a pass that did nothing.
+
+Captures are written to a fresh temporary directory, or to `out_dir=` if you
+want to keep them; pass a `toolchain=` from `llvm_lens.toolchain` to skip
+re-discovery when calling in a loop.
+
 ### Ask AI
 
 The report's **ask AI** button (top right, beside `commands`) opens a panel that

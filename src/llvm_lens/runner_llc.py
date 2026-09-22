@@ -44,16 +44,25 @@ def llc_command(
     load_pass_plugins: tuple[str, ...] = (),
     load: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
+    print_before: tuple[str, ...] = (),
+    print_all: bool = True,
     extra_args: tuple[str, ...] = (),
 ) -> list[str]:
-    """Build the llc invocation for the Lane B pipeline."""
+    """Build the llc invocation for the Lane B pipeline.
+
+    *print_all* is the report's mode: every pass dumps, plus the structure and
+    timing the card builders read. A caller asking about one pass turns it off.
+    """
     cmd = [str(llc)]
     # New-PM plugin passes (pre-codegen IR passes) and legacy machine passes.
     cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
     cmd.extend(f"-load={plugin}" for plugin in load)
     if print_after:
         cmd.append(f"-print-after={','.join(print_after)}")
-    cmd.extend(["-print-after-all", "-debug-pass=Structure", "-time-passes"])
+    if print_before:
+        cmd.append(f"-print-before={','.join(print_before)}")
+    if print_all:
+        cmd.extend(["-print-after-all", "-debug-pass=Structure", "-time-passes"])
     cmd.extend(extra_args)
     cmd.extend(["-o", str(out), str(input_ir)])
     return cmd
@@ -65,6 +74,8 @@ def run_llc(
     load_pass_plugins: tuple[str, ...] = (),
     load: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
+    print_before: tuple[str, ...] = (),
+    print_all: bool = True,
     extra_args: tuple[str, ...] = (),
     timeout: float | None = DEFAULT_TIMEOUT,
     toolchain: Toolchain | None = None,
@@ -85,7 +96,8 @@ def run_llc(
     cmd = llc_command(
         toolchain.llc.path, input_ir,
         out=asm_path,
-        load_pass_plugins=load_pass_plugins, load=load, print_after=print_after,
+        load_pass_plugins=load_pass_plugins, load=load,
+        print_after=print_after, print_before=print_before, print_all=print_all,
         extra_args=extra_args,
     )
     asm_path.unlink(missing_ok=True)

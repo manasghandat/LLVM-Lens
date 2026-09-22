@@ -44,10 +44,21 @@ def run_opt(
     out_dir: str | Path | None = None,
     load_pass_plugins: tuple[str, ...] = (),
     print_after: tuple[str, ...] = (),
+    print_before: tuple[str, ...] = (),
+    print_all: bool = True,
     extra_args: tuple[str, ...] = (),
     timeout: float | None = DEFAULT_TIMEOUT,
 ) -> OptResult:
-    """Run *passes* on *input_ir* and capture everything the parsers need."""
+    """Run *passes* on *input_ir* and capture everything the parsers need.
+
+    *print_all* is the report's mode: -print-changed plus the pass-manager and
+    timing instrumentation. A caller asking about one pass turns it off, which
+    also drops -print-changed — that flag only dumps a pass that changed
+    something, so a no-op pass would answer with nothing.
+
+    -print-module-scope stays on in both modes: a dump is the whole module, and
+    split_module_functions() splits it per function.
+    """
     input_ir = Path(input_ir)
     if not input_ir.is_file():
         raise OptError(f"input IR not found: {input_ir}")
@@ -58,16 +69,18 @@ def run_opt(
     stdout_path = out_dir / CHANGED_LOG_NAME
     stderr_path = out_dir / STDERR_LOG_NAME
 
-    cmd = [
-        str(toolchain.opt.path), "-S",
-        f"-passes={passes}",
-        "-print-changed=quiet", "-print-module-scope", "-debug-pass-manager",
-        "-time-passes",
-    ]
+    cmd = [str(toolchain.opt.path), "-S", f"-passes={passes}"]
+    if print_all:
+        cmd.append("-print-changed=quiet")
+    cmd.append("-print-module-scope")
+    if print_all:
+        cmd.extend(["-debug-pass-manager", "-time-passes"])
     cmd.extend(f"-load-pass-plugin={plugin}" for plugin in load_pass_plugins)
     # -print-after takes a comma-separated list; force a dump for custom passes.
     if print_after:
         cmd.append(f"-print-after={','.join(print_after)}")
+    if print_before:
+        cmd.append(f"-print-before={','.join(print_before)}")
     cmd.extend([*extra_args, "-o", str(final_ir), str(input_ir)])
     # Drop a previous build's output so an existing file means *this* run wrote it.
     final_ir.unlink(missing_ok=True)
