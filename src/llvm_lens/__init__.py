@@ -2,7 +2,7 @@
 
 from .api import PassSnapshot, SnapshotError, SnapshotRun, list_machine_passes, snapshot
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "PassSnapshot",
