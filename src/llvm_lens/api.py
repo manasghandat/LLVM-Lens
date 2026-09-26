@@ -447,6 +447,7 @@ def machine_ir(
     stop_after: str | None = None,
     stop_before: str | None = None,
     simplify: bool = False,
+    debug_info: bool = True,
     out_dir: str | Path | None = None,
     bin_dir: str | Path | None = None,
     llvm_version: int | None = None,
@@ -454,8 +455,7 @@ def machine_ir(
     timeout: float | None = None,
     toolchain: Toolchain | None = None,
 ) -> str:
-    """The machine IR the backend holds when it stops at a pass, as text.
-    """
+    """The machine IR the backend holds when it stops at a pass, as text."""
     if (stop_after is None) == (stop_before is None):
         raise SnapshotError(
             "give exactly one of stop_after= or stop_before=, naming the pass "
@@ -474,7 +474,7 @@ def machine_ir(
     clang_extra = ("-target", target) if target else ()
     compiled = compile_to_ir(
         source, toolchain=toolchain, out_dir=raw, timeout=timeout,
-        extra_args=clang_extra,
+        extra_args=clang_extra, debug_info=debug_info,
     )
     llc_extra = ("-mtriple", target) if target else ()
     result = run_llc(

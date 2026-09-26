@@ -75,8 +75,12 @@ def compile_to_ir(
     out_dir: str | Path | None = None,
     timeout: float | None = None,
     extra_args: tuple[str, ...] = (),
+    debug_info: bool = True,
 ) -> CompiledSource:
-    """Compile/convert *source* to textual IR and return the result."""
+    """Compile/convert *source* to textual IR and return the result.
+
+    *debug_info* is clang's -g. 
+    """
     source = Path(source)
     if not source.is_file():
         raise CompileError(f"input not found: {source}")
@@ -91,12 +95,13 @@ def compile_to_ir(
 
     compiled_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     suffix = source.suffix
+    debug_args = ("-g",) if debug_info else ()
 
     if suffix in SOURCE_EXTS:
         cmd = [
             str(toolchain.clang.path), "-S", "-emit-llvm", "-O0",
             "-Xclang", "-disable-O0-optnone",
-            "-g",
+            *debug_args,
             *extra_args,
             "-o", str(out), str(source)
         ]

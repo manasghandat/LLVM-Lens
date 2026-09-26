@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -352,8 +353,8 @@ def test_machine_ir_stop_direction_picks_the_side_of_the_pass(toolchain, tmp_pat
 
 
 def test_machine_ir_simplify_keeps_the_machine_code(toolchain, tmp_path):
-    """-simplify-mir drops metadata, not the machine code: the text is shorter
-    and still MIR."""
+    """-simplify-mir leaves out default-valued fields, not the machine code:
+    the text is shorter and still MIR."""
     full = machine_ir(SAMPLE_C, stop_after="x86-isel", out_dir=tmp_path,
                       toolchain=toolchain)
     lean = machine_ir(SAMPLE_C, stop_after="x86-isel", simplify=True,
@@ -362,6 +363,51 @@ def test_machine_ir_simplify_keeps_the_machine_code(toolchain, tmp_path):
     assert "name:" in lean
     path = tmp_path / "lean.mir"
     path.write_text(lean)
+    assert _mir_parses(toolchain, path)
+
+
+def test_machine_ir_without_debug_info_is_the_same_code_unannotated(
+    toolchain, tmp_path
+):
+    """debug_info=False drops the metadata, not the machine code: take the
+    annotations off both texts and the instructions match line for line."""
+    full = machine_ir(SAMPLE_C, stop_after="x86-isel", out_dir=tmp_path,
+                      toolchain=toolchain)
+    bare = machine_ir(SAMPLE_C, stop_after="x86-isel", debug_info=False,
+                      out_dir=tmp_path, toolchain=toolchain)
+    assert bare.startswith("--- |")
+    assert "name:" in bare
+    assert len(bare) < len(full)
+    assert "debug-location" in full and "debug-location" not in bare
+    assert "!dbg" in full and "!dbg" not in bare
+    # The stack entries keep the keys without -g, but empty: they point at
+    # metadata that no longer exists.
+    assert "debug-info-variable: '!" in full
+    assert "debug-info-variable: ''" in bare
+    assert "debug-info-variable: '!" not in bare
+
+    def code(text):
+        """Every instruction or IR line, with annotations that are not code off.
+
+        The IR document is indented like an instruction, so it is in here too;
+        that is the point — the embedded IR must agree as well. Metadata
+        numbering is left out of the comparison: the numbers differ because
+        the module without -g has fewer nodes, not because the code does.
+        """
+        lines = []
+        for line in text.splitlines():
+            if not re.match(r"^    [A-Za-z$%]", line):
+                continue
+            if line.lstrip().startswith("debug-"):  # stack entry keys
+                continue
+            # No comma when the instruction has no operands: `LFENCE debug-...`
+            line = re.sub(r",? ?(?:debug-location|!dbg) !\d+", "", line)
+            lines.append(re.sub(r"!([\w.]+) !\d+", r"!\1 !N", line))
+        return lines
+
+    assert code(bare) == code(full)
+    path = tmp_path / "bare.mir"
+    path.write_text(bare)
     assert _mir_parses(toolchain, path)
 
 

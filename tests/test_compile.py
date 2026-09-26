@@ -32,6 +32,18 @@ def test_compile_c_to_ir(toolchain, tmp_path):
     assert "!dbg" in text  # -g debug locations must be present
 
 
+def test_compile_without_debug_info_drops_only_the_g_flag(toolchain, tmp_path):
+    """-g is metadata: the command loses the flag and the IR loses the !dbg."""
+    kept = compile_to_ir(SAMPLE_C, out_dir=tmp_path, toolchain=toolchain,
+                         extra_args=("-DNDEBUG",))
+    with_debug = kept.ir_path.read_text()  # before the next run overwrites it
+    dropped = compile_to_ir(SAMPLE_C, out_dir=tmp_path, toolchain=toolchain,
+                            extra_args=("-DNDEBUG",), debug_info=False)
+    assert list(dropped.cmd) == [arg for arg in kept.cmd if arg != "-g"]
+    assert "!dbg" in with_debug
+    assert "!dbg" not in dropped.ir_path.read_text()
+
+
 def test_compile_ll_passthrough(toolchain, tmp_path):
     src = tmp_path / "mod.ll"
     src.write_text("; test\nModuleID = 'x'\ndefine void @f() {\n  ret void\n}\n")

@@ -272,13 +272,18 @@ holding the module's IR and each machine function following as its own:
 mir = llvm_lens.machine_ir("sample.c", stop_after="x86-isel")
 mir.startswith("--- |")          # the embedded IR document
 mir.count("\n---\n")             # then one document per machine function
+
+bare = llvm_lens.machine_ir("sample.c", stop_after="x86-isel", debug_info=False)
 ```
 
 Stop *after* a pass for the state it left, or *before* it for the state it saw —
-exactly one of the two, since llc rejects the pair. `simplify=True` adds
-`-simplify-mir` to drop debug metadata for a shorter text. Written to a file,
-`llc -x mir` parses it and can run passes over it; a `snapshot()` dump cannot be
-made to do either.
+exactly one of the two, since llc rejects the pair. `debug_info=False` compiles
+without `-g`, so no `debug-location`, stack debug info or `!dbg` reaches the
+text; the machine code is the same either way, so it is the one to reach for
+when the MIR is going into a test or a diff. `simplify=True` adds
+`-simplify-mir`, which leaves out every field holding its default value, for a
+shorter text of that same code. Written to a file, `llc -x mir` parses it and
+can run passes over it; a `snapshot()` dump cannot be made to do either.
 
 A pass can run more than once. `instcombine` runs 24 times over the bundled
 sample under `default<O2>`, each run with its own before and after state, and a
