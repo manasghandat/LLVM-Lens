@@ -45,6 +45,32 @@ def test_llc_command_no_s_flag():  # llc emits asm by default; -S is an error
     assert "-S" not in cmd
 
 
+def test_llc_command_stop_flags(tmp_path):
+    """-stop-after/-stop-before reach the MIR lane the -print flags do not."""
+    cmd = llc_command(
+        Path("/llvm/llc"), Path("in.ll"),
+        out=tmp_path / "machine.mir",
+        print_all=False, stop_after="x86-isel", simplify_mir=True,
+    )
+    assert cmd == [
+        "/llvm/llc",
+        "-stop-after=x86-isel", "-simplify-mir",
+        "-o", str(tmp_path / "machine.mir"), "in.ll",
+    ]
+
+
+def test_run_llc_stopping_writes_mir_to_the_output(toolchain, sample_ir, tmp_path):
+    """Stopping at a pass replaces the asm the -o path would hold with MIR."""
+    result = run_llc(
+        sample_ir, out_dir=tmp_path, print_all=False,
+        stop_after="x86-isel", toolchain=toolchain,
+    )
+    assert not result.failed
+    assert result.asm_path == tmp_path / "machine.mir"
+    assert result.asm_path.read_text().startswith("--- |")  # the embedded IR
+    assert "# Machine code for function" not in result.asm_path.read_text()
+
+
 def test_run_llc_success(toolchain, sample_ir, tmp_path):
     result = run_llc(sample_ir, out_dir=tmp_path, toolchain=toolchain)
     assert not result.failed

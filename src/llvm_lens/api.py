@@ -26,7 +26,8 @@ from .settings import DEFAULT_PASSES
 from .toolchain import Toolchain, discover_toolchain
 
 __all__ = [
-    "PassSnapshot", "SnapshotError", "SnapshotRun", "list_machine_passes", "snapshot",
+    "PassSnapshot", "SnapshotError", "SnapshotRun", "list_machine_passes",
+    "machine_ir", "snapshot",
 ]
 
 LANES = ("machine", "ir")
@@ -438,6 +439,61 @@ def list_machine_passes(
     for dump in parse_ir_dumps(stderr):
         seen.setdefault(dump.pass_id, dump.pass_name)
     return list(seen.items())
+
+
+def machine_ir(
+    source: str | Path | None = None,
+    *,
+    stop_after: str | None = None,
+    stop_before: str | None = None,
+    simplify: bool = False,
+    out_dir: str | Path | None = None,
+    bin_dir: str | Path | None = None,
+    llvm_version: int | None = None,
+    target: str | None = None,
+    timeout: float | None = None,
+    toolchain: Toolchain | None = None,
+) -> str:
+    """The machine IR the backend holds when it stops at a pass, as text.
+    """
+    if (stop_after is None) == (stop_before is None):
+        raise SnapshotError(
+            "give exactly one of stop_after= or stop_before=, naming the pass "
+            "to stop at; list_machine_passes(source) prints the ids this file "
+            "runs"
+        )
+    stop_id = stop_after if stop_after is not None else stop_before
+    _check_pass_name(str(stop_id), "machine")
+
+    if toolchain is None:
+        toolchain = discover_toolchain(bin_dir, llvm_version)
+    source = Path(source) if source is not None else _scratch_source()
+
+    raw = _run_dir(out_dir) / RAW_DIR
+    raw.mkdir(parents=True, exist_ok=True)
+    clang_extra = ("-target", target) if target else ()
+    compiled = compile_to_ir(
+        source, toolchain=toolchain, out_dir=raw, timeout=timeout,
+        extra_args=clang_extra,
+    )
+    llc_extra = ("-mtriple", target) if target else ()
+    result = run_llc(
+        compiled.ir_path, out_dir=raw, print_all=False,
+        stop_after=stop_after or "", stop_before=stop_before or "",
+        simplify_mir=simplify, extra_args=llc_extra, timeout=timeout,
+        toolchain=toolchain,
+    )
+    if result.failed:
+        raise SnapshotError(
+            f"llc failed (exit {result.returncode}); see {result.stderr_path}\n"
+            f"{_tail(result.stderr_path)}"
+        )
+    if result.asm_path is None:
+        raise SnapshotError(
+            f"llc stopped at {stop_id!r} having written no MIR; "
+            f"see {result.stderr_path}"
+        )
+    return result.asm_path.read_text(errors="replace")
 
 
 def _tail(path: Path, lines: int = 20) -> str:

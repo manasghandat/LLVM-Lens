@@ -263,6 +263,23 @@ a small scratch C file written under the system temp directory (`/tmp` on
 Linux), so a caller with no source of their own can still ask what this target's
 backend runs.
 
+`snapshot()` returns llc's *print* output, which is a dump: readable, but not a
+format any MIR consumer takes. `machine_ir()` returns the MIR serialization
+format itself — the YAML documents LLVM's own MIR parser reads back, the first
+holding the module's IR and each machine function following as its own:
+
+```python
+mir = llvm_lens.machine_ir("sample.c", stop_after="x86-isel")
+mir.startswith("--- |")          # the embedded IR document
+mir.count("\n---\n")             # then one document per machine function
+```
+
+Stop *after* a pass for the state it left, or *before* it for the state it saw —
+exactly one of the two, since llc rejects the pair. `simplify=True` adds
+`-simplify-mir` to drop debug metadata for a shorter text. Written to a file,
+`llc -x mir` parses it and can run passes over it; a `snapshot()` dump cannot be
+made to do either.
+
 A pass can run more than once. `instcombine` runs 24 times over the bundled
 sample under `default<O2>`, each run with its own before and after state, and a
 machine pass that appears twice in llc's pipeline dumps every function twice.

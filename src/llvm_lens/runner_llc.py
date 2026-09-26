@@ -12,6 +12,7 @@ from .toolchain import Toolchain, discover_toolchain
 DEFAULT_TIMEOUT = None  # no wall clock unless --timeout asks for one
 
 ASM_NAME = "final.s"
+MIR_NAME = "machine.mir"  # what -o holds when the run stops at a pass
 STDOUT_LOG_NAME = "llc-stdout.log"
 STDERR_LOG_NAME = "llc-stderr.log"
 
@@ -23,7 +24,9 @@ class LlcError(RuntimeError):
 @dataclass(frozen=True)
 class LlcResult:
     input_ir: Path
-    asm_path: Path | None  # final assembly; None if llc failed to emit
+    # The -o output: final assembly, or the MIR text when the run stopped at a
+    # pass. None if llc failed to emit.
+    asm_path: Path | None
     stdout_path: Path
     stderr_path: Path
     cmd: tuple[str, ...]
@@ -46,12 +49,19 @@ def llc_command(
     print_after: tuple[str, ...] = (),
     print_before: tuple[str, ...] = (),
     print_all: bool = True,
+    stop_after: str = "",
+    stop_before: str = "",
+    simplify_mir: bool = False,
     extra_args: tuple[str, ...] = (),
 ) -> list[str]:
     """Build the llc invocation for the Lane B pipeline.
 
     *print_all* is the report's mode: every pass dumps, plus the structure and
     timing the card builders read. A caller asking about one pass turns it off.
+
+    *stop_after*/*stop_before* stop the backend at a named pass and make llc
+    write the MIR serialization format to -o in place of assembly. They are
+    mutually exclusive, and llc rejects both together.
     """
     cmd = [str(llc)]
     # New-PM plugin passes (pre-codegen IR passes) and legacy machine passes.
@@ -63,6 +73,12 @@ def llc_command(
         cmd.append(f"-print-before={','.join(print_before)}")
     if print_all:
         cmd.extend(["-print-after-all", "-debug-pass=Structure", "-time-passes"])
+    if stop_after:
+        cmd.append(f"-stop-after={stop_after}")
+    if stop_before:
+        cmd.append(f"-stop-before={stop_before}")
+    if simplify_mir:
+        cmd.append("-simplify-mir")
     cmd.extend(extra_args)
     cmd.extend(["-o", str(out), str(input_ir)])
     return cmd
@@ -76,6 +92,9 @@ def run_llc(
     print_after: tuple[str, ...] = (),
     print_before: tuple[str, ...] = (),
     print_all: bool = True,
+    stop_after: str = "",
+    stop_before: str = "",
+    simplify_mir: bool = False,
     extra_args: tuple[str, ...] = (),
     timeout: float | None = DEFAULT_TIMEOUT,
     toolchain: Toolchain | None = None,
@@ -89,7 +108,8 @@ def run_llc(
 
     out_dir = Path(out_dir) if out_dir else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
-    asm_path = out_dir / ASM_NAME
+    # Stopping at a pass puts MIR, not assembly, in the -o output.
+    asm_path = out_dir / (MIR_NAME if (stop_after or stop_before) else ASM_NAME)
     stdout_path = out_dir / STDOUT_LOG_NAME
     stderr_path = out_dir / STDERR_LOG_NAME
 
@@ -98,6 +118,7 @@ def run_llc(
         out=asm_path,
         load_pass_plugins=load_pass_plugins, load=load,
         print_after=print_after, print_before=print_before, print_all=print_all,
+        stop_after=stop_after, stop_before=stop_before, simplify_mir=simplify_mir,
         extra_args=extra_args,
     )
     asm_path.unlink(missing_ok=True)

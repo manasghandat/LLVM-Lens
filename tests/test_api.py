@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from llvm_lens import PassSnapshot, SnapshotError, list_machine_passes, snapshot
+from llvm_lens import (
+    PassSnapshot,
+    SnapshotError,
+    list_machine_passes,
+    machine_ir,
+    snapshot,
+)
 from llvm_lens import api as api_mod
 from llvm_lens.compile import CompileError
 from llvm_lens.parsers.mir import (
@@ -55,6 +62,16 @@ bb.0 (%ir-block.2):
 
 def defines(module_text: str) -> int:
     return sum(1 for line in module_text.splitlines() if line.startswith("define"))
+
+
+def _mir_parses(toolchain, path) -> bool:
+    """True when llc takes *path* as MIR input; it exits non-zero otherwise."""
+    proc = subprocess.run(
+        [str(toolchain.llc.path), "-x", "mir", "-o", str(path.parent / "out.s"),
+         str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    return proc.returncode == 0
 
 
 # --- offline: argument validation ---------------------------------------------
@@ -106,6 +123,19 @@ def test_snapshot_rejects_a_pass_list():
 def test_snapshot_rejects_an_empty_pass_name():
     with pytest.raises(SnapshotError, match="pass_name is empty"):
         snapshot(SAMPLE_C, "  ")
+
+
+def test_machine_ir_needs_exactly_one_stop_point():
+    """llc rejects both together, so neither is as unusable as the pair."""
+    with pytest.raises(SnapshotError, match="exactly one of stop_after="):
+        machine_ir(SAMPLE_C)
+    with pytest.raises(SnapshotError, match="exactly one of stop_after="):
+        machine_ir(SAMPLE_C, stop_after="greedy", stop_before="greedy")
+
+
+def test_machine_ir_rejects_a_display_name_before_running_anything():
+    with pytest.raises(SnapshotError, match="looks like a display name"):
+        machine_ir(SAMPLE_C, stop_after="Greedy Register Allocator")
 
 
 def test_list_machine_passes_without_a_source_compiles_a_scratch_file(
@@ -272,6 +302,67 @@ def test_list_machine_passes_answers_without_a_source(toolchain, tmp_path):
     for pass_id, name in pairs:
         assert pass_id and " " not in pass_id, (pass_id, name)
     assert not list(tmp_path.glob("*.c")), "the scratch source belongs in temp"
+
+
+def test_machine_ir_is_the_serialization_format_not_a_dump(toolchain, tmp_path):
+    """YAML documents, not llc's `# Machine code for function` print output."""
+    mir = machine_ir(SAMPLE_C, stop_after="x86-isel", out_dir=tmp_path,
+                     toolchain=toolchain)
+    assert mir.startswith("--- |"), "the first document is the module's IR"
+    assert "# Machine code for function" not in mir
+    # One bare `---` per machine function, after that first, flagged document.
+    markers = [line for line in mir.splitlines() if line == "---"]
+    names = [line.split(":", 1)[1].strip() for line in mir.splitlines()
+             if line.startswith("name:")]
+    assert names, "expected a document per machine function"
+    assert len(markers) == len(names)
+    assert "main" in names
+    # Returned verbatim, and left where the rest of a run's captures go.
+    assert (tmp_path / "raw" / "machine.mir").read_text() == mir
+
+
+def test_machine_ir_round_trips_through_llc_where_a_dump_does_not(
+    toolchain, tmp_path
+):
+    """The point of the lane: LLVM's own MIR parser takes this text, and not a
+    -print-after dump."""
+    path = tmp_path / "round-trip.mir"
+    path.write_text(
+        machine_ir(SAMPLE_C, stop_after="x86-isel", out_dir=tmp_path,
+                   toolchain=toolchain)
+    )
+    assert _mir_parses(toolchain, path)
+
+    path.write_text(
+        snapshot(SAMPLE_C, "x86-isel", out_dir=tmp_path, toolchain=toolchain).text
+    )
+    assert not _mir_parses(toolchain, path)
+
+
+def test_machine_ir_stop_direction_picks_the_side_of_the_pass(toolchain, tmp_path):
+    """stop_before is the state the pass saw; stop_after the state it left."""
+    before = machine_ir(SAMPLE_C, stop_before="greedy", out_dir=tmp_path,
+                        toolchain=toolchain)
+    after = machine_ir(SAMPLE_C, stop_after="greedy", out_dir=tmp_path,
+                       toolchain=toolchain)
+    assert before != after
+    for text in (before, after):
+        assert text.startswith("--- |")
+        assert "name:" in text
+
+
+def test_machine_ir_simplify_keeps_the_machine_code(toolchain, tmp_path):
+    """-simplify-mir drops metadata, not the machine code: the text is shorter
+    and still MIR."""
+    full = machine_ir(SAMPLE_C, stop_after="x86-isel", out_dir=tmp_path,
+                      toolchain=toolchain)
+    lean = machine_ir(SAMPLE_C, stop_after="x86-isel", simplify=True,
+                      out_dir=tmp_path, toolchain=toolchain)
+    assert len(lean) < len(full)
+    assert "name:" in lean
+    path = tmp_path / "lean.mir"
+    path.write_text(lean)
+    assert _mir_parses(toolchain, path)
 
 
 def test_snapshot_machine_unknown_id_raises(toolchain, tmp_path):
