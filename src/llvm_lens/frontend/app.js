@@ -190,6 +190,19 @@ function irSideHtml(ops, mark) {
 
 const BLAME_TINTS = 8;   // distinct gutter tints before they start repeating
 
+// Debug bookkeeping (DBG_VALUE, #dbg_*, CFI_INSTRUCTION, predecessors) clutters
+// the blame view without showing what a pass did to real instructions — drop it,
+// for both LLVM IR and MIR. (Inline !dbg tails are stripped by cleanMirLine.)
+function isMirDebugLine(line) {
+  return /^\s*(DBG_(VALUE(_LIST)?|INSTR_REF|PHI)|(frame-(setup|destroy)\s+)?CFI_INSTRUCTION|; predecessors:)/.test(line);
+}
+function isIrDebugLine(line) {
+  return /^\s*(#dbg_(declare|value)|call void @llvm\.dbg\.(declare|value))/.test(line);
+}
+function dropDebugLine(line) {
+  return isMirDebugLine(line) || isIrDebugLine(line);
+}
+
 // One lane's lineage document: pass names, writes and per-line chains, interned.
 const blameDocs = new Map();   // lane -> Promise<doc|null>
 
@@ -232,7 +245,11 @@ function blameWalkFor(doc, fn) {
   }));
   const last = runs[runs.length - 1];
   last.lines = entry.text;
-  return { runs, lines: entry.text, history: last.history };
+  // Debug lines are dropped from the blame view; map each displayed row back to
+  // its original line index so the inspector can resolve the right history.
+  const kept = [];
+  entry.text.forEach((text, i) => { if (!dropDebugLine(text)) kept.push(i); });
+  return { runs, lines: entry.text, history: last.history, kept };
 }
 
 // The function as of *run*: the last state at or before it.
@@ -289,9 +306,13 @@ function blameEntry() {
   const line = STATE.blameLine;
   if (!walk || !line) return null;
   if (STATE.mode === "blame") {
-    if (line > walk.lines.length) return null;
-    return { run: walk.runs[walk.runs.length - 1].run, text: walk.lines[line - 1],
-             history: walk.history[line - 1] || [] };
+    // The blame view drops debug lines and renumbers; resolve the displayed row
+    // back to its original line index via the walk's kept[] mapping.
+    const kept = walk.kept || [];
+    if (line < 1 || line > kept.length) return null;
+    const original = kept[line - 1];
+    return { run: walk.runs[walk.runs.length - 1].run, text: walk.lines[original],
+             history: walk.history[original] || [], line: line };
   }
   const summary = currentPassSummary();
   if (!summary || !STATE.fn) return null;
@@ -341,18 +362,26 @@ function blameInspectorHtml() {
 }
 
 function blameRowsHtml(walk) {
-  return walk.lines.map((text, i) => {
+  // Debug bookkeeping (DBG_VALUE, #dbg_*, CFI_INSTRUCTION, predecessors) clutters
+  // the lineage without showing what the pass did to real instructions — drop it,
+  // for both LLVM IR and MIR, renumbering the blame gutter as we go.
+  let n = 0;
+  const rows = [];
+  walk.lines.forEach((text, i) => {
+    if (dropDebugLine(text)) return;
+    n += 1;
     const last = blameLast(walk.history[i]);
     const who = last
       ? `run ${last.run} · ${last.name} · ${last.kind}`
       : "already in the input IR";
-    return `<div class="urow bline${STATE.blameLine === i + 1 ? " hit" : ""}"`
-      + ` data-blame="${i + 1}" title="${escapeHtml(who)}">`
-      + `<span class="uln">${i + 1}</span>`
+    rows.push(`<div class="urow bline${STATE.blameLine === n ? " hit" : ""}"`
+      + ` data-blame="${n}" title="${escapeHtml(who)}">`
+      + `<span class="uln">${n}</span>`
       + `<span class="ublame ${blameTint(last && last.run)}">${last ? last.run : "in"}</span>`
       + `<code class="utext">${highlightIR(text) || "&nbsp;"}</code>`
-      + "</div>";
-  }).join("");
+      + `</div>`);
+  });
+  return rows.join("");
 }
 
 function blamePaneHtml() {
@@ -406,10 +435,6 @@ const IR_TOKEN_DEFS = [
 const IR_TOKEN_RES = IR_TOKEN_DEFS.map(d =>
   ({ cls: d.cls, re: new RegExp(d.re.source, "g") }));
 
-function isMirDebugLine(line) {
-  return /^\s*(DBG_(VALUE(_LIST)?|INSTR_REF|PHI)|(frame-(setup|destroy)\s+)?CFI_INSTRUCTION|; predecessors:)/.test(line);
-}
-
 function cleanMirLine(line) {
   line = line.replace(/^(\d+B)\s+/, "  ");
   line = line.replace(/,?\s*debug-instr-number\s+\d+/, "");
@@ -419,13 +444,6 @@ function cleanMirLine(line) {
   return line;
 }
 
-function isIrDebugLine(line) {
-  return /^\s*(#dbg_(declare|value)|call void @llvm\.dbg\.(declare|value))/.test(line);
-}
-
-function dropDebugLine(line) {
-  return isMirDebugLine(line) || isIrDebugLine(line);
-}
 
 function highlightIR(text) {
   return String(text).split("\n").map(line => {
@@ -1035,7 +1053,46 @@ function srcPaneHtml() {
       <div class="divider" title="drag to resize"></div>
       ${side(files[index].name, srcRows, "cmapside")}
     </div>`;
-  return pane("SOURCE", chips, stat, body);
+  return pane("SOURCE", chips, stat, body) + sourceHistoryHtml();
+}
+
+// --- Source-line history: every pass that changed the clicked source line ---
+
+function sourceHistoryHtml() {
+  if (STATE.srcLine == null || STATE.mode !== "src") return "";
+  const fn = STATE.fn;
+  if (!fn) return "";
+  const lane = (CURRENT_PASS && CURRENT_PASS.lane) || "ir";
+  const byFile = ((CURRENT_MANIFEST.metadata || {}).sourceHistory || {})[lane] || {};
+  const forFn = byFile[fn] || {};
+  // The clicked source line may be on the active file or another; try both the
+  // active file index and a bare line match.
+  const files = sourceFiles();
+  const fileIdx = files.findIndex(f => f.path === STATE.srcFile);
+  const key = `${fileIdx}:${STATE.srcLine}`;
+  let entries = forFn[key];
+  if (!entries) {
+    entries = forFn[String(STATE.srcLine)] || forFn[`:${STATE.srcLine}`];
+  }
+  if (!entries || !entries.length) {
+    return `<div class="bdetail src-empty">no mapped changes for source line ${STATE.srcLine}</div>`;
+  }
+  const rows = entries.map(e => {
+    const parts = [];
+    if (e.created) parts.push(`<span class="sch created">+${e.created} new</span>`);
+    if (e.rewritten) parts.push(`<span class="sch rewritten">~${e.rewritten}</span>`);
+    if (e.renamed) parts.push(`<span class="sch renamed">~${e.renamed}</span>`);
+    if (e.removed) parts.push(`<span class="sch removed">−${e.removed}</span>`);
+    const counts = parts.join("") || '<span class="sch kept">unchanged</span>';
+    return `<div class="brow" title="run ${e.run}">`
+      + `<span class="brun">${e.run}</span>`
+      + `<span class="bname">${escapeHtml(e.pass)}</span>`
+      + `<span class="sch-cell">${counts}</span>`
+      + `</div>`;
+  }).join("");
+  const head = `<div class="bdetail-head"><span class="btitle">source line ${STATE.srcLine}</span>`
+    + `<span class="bclose" data-srcline="1" title="close">✕</span></div>`;
+  return `<div class="bdetail src-history">${head}<div class="bchain">${rows}</div></div>`;
 }
 
 // --- Structure tree: the pass-manager hierarchy at a glance ---------------------
@@ -3088,8 +3145,15 @@ document.getElementById("split").addEventListener("click", evt => {
     });
     return;
   }
-  if (evt.target.closest("#split .bclose")) {
+  const closer = evt.target.closest("#split .bclose");
+  if (closer) {
     STATE.blameLine = null;
+    STATE.srcLine = null;
+    renderMain();
+    return;
+  }
+  if (evt.target.closest("#split [data-srcline]")) {
+    STATE.srcLine = null;
     renderMain();
     return;
   }
