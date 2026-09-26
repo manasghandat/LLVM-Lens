@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from llvm_lens import PassSnapshot, SnapshotError, list_machine_passes, snapshot
+from llvm_lens import api as api_mod
+from llvm_lens.compile import CompileError
 from llvm_lens.parsers.mir import (
     MachineFunction,
     parse_ir_dumps,
@@ -103,6 +106,36 @@ def test_snapshot_rejects_a_pass_list():
 def test_snapshot_rejects_an_empty_pass_name():
     with pytest.raises(SnapshotError, match="pass_name is empty"):
         snapshot(SAMPLE_C, "  ")
+
+
+def test_list_machine_passes_without_a_source_compiles_a_scratch_file(
+    tmp_path, monkeypatch
+):
+    """Naming no file is a supported call: a scratch C source stands in for one.
+
+    The compile is stubbed, so this pins where the file goes and what is in it
+    without needing a toolchain; the end-to-end test below runs it for real.
+    """
+    seen: dict = {}
+
+    def fake_compile(source, **kwargs):
+        seen["source"] = Path(source)
+        raise CompileError("stop at the compile: the rest needs a real toolchain")
+
+    monkeypatch.setattr(api_mod, "discover_toolchain", lambda *a, **k: object())
+    monkeypatch.setattr(api_mod, "compile_to_ir", fake_compile)
+
+    with pytest.raises(CompileError, match="stop at the compile"):
+        list_machine_passes(out_dir=tmp_path)
+
+    source = seen["source"]
+    assert source.is_file(), "the scratch file must be written, not just named"
+    # A .c: any other suffix is an unsupported input to compile_to_ir.
+    assert source.suffix == ".c"
+    assert source.parent.parent.resolve() == Path(tempfile.gettempdir()).resolve()
+    # out_dir is for captures; the source a caller did not name is not theirs.
+    assert source.parent != tmp_path
+    assert "int square(int x)" in source.read_text()
 
 
 # --- offline: the parsers behind the API ---------------------------------------
@@ -228,6 +261,17 @@ def test_list_machine_passes_reports_ids_and_names(toolchain, tmp_path):
     assert len(ids) == len(set(ids))  # a pass that runs twice is listed once
     for pass_id, name in pairs:
         assert pass_id and " " not in pass_id, (pass_id, name)
+
+
+def test_list_machine_passes_answers_without_a_source(toolchain, tmp_path):
+    """The scratch source must run a real backend pipeline, not an empty one."""
+    pairs = list_machine_passes(out_dir=tmp_path, toolchain=toolchain)
+    assert pairs, "expected llc to report the passes it runs"
+    ids = [pass_id for pass_id, _ in pairs]
+    assert len(ids) == len(set(ids))
+    for pass_id, name in pairs:
+        assert pass_id and " " not in pass_id, (pass_id, name)
+    assert not list(tmp_path.glob("*.c")), "the scratch source belongs in temp"
 
 
 def test_snapshot_machine_unknown_id_raises(toolchain, tmp_path):

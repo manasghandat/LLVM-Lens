@@ -35,6 +35,19 @@ WHENS = ("before", "after")
 # The name of the subdirectory holding captures, under the caller's out_dir.
 RAW_DIR = "raw"
 
+# What list_machine_passes() compiles when the caller names no source file
+SCRATCH_SOURCE = """\
+/* Compiled when llvm_lens.list_machine_passes() is given no source. */
+int square(int x) { return x * x; }
+
+int sum_squares(const int *values, int n) {
+    int total = 0;
+    for (int i = 0; i < n; i++)
+        total += square(values[i]);
+    return total;
+}
+"""
+
 
 class SnapshotError(RuntimeError):
     """The requested pass, lane, or occurrence could not be answered."""
@@ -257,6 +270,13 @@ def _run_dir(out_dir: str | Path | None) -> Path:
     return Path(tempfile.mkdtemp(prefix="llvm-lens-"))
 
 
+def _scratch_source() -> Path:
+    scratch = Path(tempfile.mkdtemp(prefix="llvm-lens-src-"))
+    path = scratch / "scratch.c"
+    path.write_text(SCRATCH_SOURCE)
+    return path
+
+
 # --- the public surface -------------------------------------------------------
 
 
@@ -373,7 +393,7 @@ def snapshot(
 
 
 def list_machine_passes(
-    source: str | Path,
+    source: str | Path | None = None,
     *,
     out_dir: str | Path | None = None,
     bin_dir: str | Path | None = None,
@@ -384,12 +404,15 @@ def list_machine_passes(
 ) -> list[tuple[str, str]]:
     """Every pass llc runs on *source*, as (id, display name), in pipeline order.
 
+    *source* is optional: with no file named, a small scratch C file is compiled
+    instead, written under /tmp
+
     Runs the whole backend with -print-after-all, so it costs a full llc run
     rather than a targeted one; the ids it returns are what snapshot() accepts.
     """
-    source = Path(source)
     if toolchain is None:
         toolchain = discover_toolchain(bin_dir, llvm_version)
+    source = Path(source) if source is not None else _scratch_source()
 
     raw = _run_dir(out_dir) / RAW_DIR
     raw.mkdir(parents=True, exist_ok=True)

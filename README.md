@@ -258,6 +258,11 @@ for pass_id, display_name in llvm_lens.list_machine_passes("sample.c"):
     print(pass_id, "—", display_name)
 ```
 
+The file is optional. Called with no argument, `list_machine_passes()` compiles
+a small scratch C file written under the system temp directory (`/tmp` on
+Linux), so a caller with no source of their own can still ask what this target's
+backend runs.
+
 A pass can run more than once. `instcombine` runs 24 times over the bundled
 sample under `default<O2>`, each run with its own before and after state, and a
 machine pass that appears twice in llc's pipeline dumps every function twice.
