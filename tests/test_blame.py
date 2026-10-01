@@ -18,6 +18,8 @@ from llvm_lens.blame import (
     lane_a_slots,
     lane_a_timeline,
     mir_timeline,
+    source_line_diff,
+    source_line_history,
     split_lines,
     walk,
 )
@@ -333,3 +335,103 @@ def test_the_document_is_json_serialisable():
     timeline.record("main", 1, "A", MODULE.replace("1, 2", "1, 3"))
     text = json.dumps(blame_document("ir", timeline))
     assert json.loads(text)["functions"]["main"]["text"][1].strip() == "%1 = add i32 1, 3"
+
+
+# --- source-line diff: how the IR lines for each source line changed ------------
+
+
+# before/after IR where every line maps to source file 0; the body lines map to
+# source lines 11 and 12 respectively.
+_BEFORE_MAP = [[0, 10], [0, 11], [0, 12]]
+_AFTER_MAP = [[0, 10], [0, 11], [0, 12]]
+
+
+def test_source_line_diff_counts_new_lines():
+    """A new IR line mapping to a source line is counted created."""
+    before = "define i32 @main() {\n  ret i32 0\n}"
+    before_map = [[0, 10], [0, 11], [0, 12]]
+    after = "define i32 @main() {\n  %1 = add i32 1, 2\n  ret i32 %1\n}"
+    # The new add maps to src 11, ret shifts to src 11 too, } stays src 12.
+    after_map = [[0, 10], [0, 11], [0, 11], [0, 12]]
+    diff = source_line_diff(before, before_map, after, after_map)
+    assert diff[(0, 11)]["created"] == 1  # the add appeared
+    assert diff[(0, 11)]["rewritten"] == 1  # ret changed text
+    assert diff[(0, 12)]["kept"] == 1  # }
+
+
+def test_source_line_diff_counts_rewritten_lines():
+    """An IR line that changed but maps to the same source line is rewritten."""
+    before = "define i32 @main() {\n  ret i32 0\n}"
+    after = "define i32 @main() {\n  ret i32 1\n}"
+    diff = source_line_diff(before, _BEFORE_MAP, after, _AFTER_MAP)
+    assert diff[(0, 11)]["rewritten"] == 1  # ret i32 0 -> ret i32 1 on src 11
+
+
+def test_source_line_diff_counts_removed_lines():
+    """An IR line that no longer maps to a source line is removed."""
+    before = "define i32 @main() {\n  %1 = add i32 1, 2\n  ret i32 %1\n}"
+    after = "define i32 @main() {\n  ret i32 0\n}"
+    before_map = [[0, 10], [0, 12], [0, 12]]
+    diff = source_line_diff(before, before_map, after, _AFTER_MAP)
+    assert diff[(0, 12)]["removed"] == 1
+
+
+def test_source_line_diff_groups_by_source_line():
+    """Lines mapping to different source lines are counted independently."""
+    before = "define i32 @main() {\n  ret i32 0\n  ret i32 1\n}"
+    after = "define i32 @main() {\n  ret i32 9\n  ret i32 8\n}"
+    before_map = [[0, 10], [0, 11], [0, 12]]
+    after_map = [[0, 10], [0, 11], [0, 12]]
+    diff = source_line_diff(before, before_map, after, after_map)
+    assert diff[(0, 11)]["rewritten"] == 1
+    assert diff[(0, 12)]["rewritten"] == 1
+
+
+def test_source_line_diff_ignores_unmapped_lines():
+    """IR lines with no !dbg contribute to no source line's counts."""
+    before = "define i32 @main() {\n  ret i32 0\n}"
+    after = "define i32 @main() {\n  ret i32 1\n}"
+    before_map = [None, None, None]
+    after_map = [None, None, None]
+    # Only source lines that appear after the pass are keys; none do here.
+    diff = source_line_diff(before, before_map, after, after_map)
+    assert diff == {}
+
+
+def test_source_line_history_accumulates_across_passes():
+    """A source line touched by several passes gets one entry per pass, oldest first."""
+    transitions = [
+        ("SROAPass", 3, "define i32 @main() {\n  ret i32 0\n}",
+         _BEFORE_MAP, "define i32 @main() {\n  %1 = add i32 1, 2\n  ret i32 %1\n}",
+         [[0, 10], [0, 12], [0, 12]]),
+        ("GVNPass", 7, "define i32 @main() {\n  %1 = add i32 1, 2\n  ret i32 %1\n}",
+         [[0, 10], [0, 12], [0, 12]], "define i32 @main() {\n  ret i32 1\n}",
+         _AFTER_MAP),
+    ]
+    history = source_line_history(transitions)
+    entries = history[(0, 12)]
+    assert [e["pass"] for e in entries] == ["SROAPass", "GVNPass"]
+    assert entries[0]["created"] == 1  # SROAPass added an IR line for src 12
+    assert entries[1]["removed"] == 1  # GVNPass removed one
+
+
+def test_source_line_history_skips_untouched_passes():
+    """A pass that doesn't change a source line is absent from its history."""
+    transitions = [
+        ("A", 1, "x\ny", [[0, 11], [0, 12]], "x\nY", [[0, 11], [0, 12]]),
+        ("B", 2, "x\nY", [[0, 11], [0, 12]], "x\nY", [[0, 11], [0, 12]]),  # no change
+    ]
+    history = source_line_history(transitions)
+    entries = history[(0, 12)]
+    assert [e["pass"] for e in entries] == ["A"]
+
+
+def test_source_line_history_is_json_serialisable():
+    """Tuple keys are stringified for the report, exactly as the production path does."""
+    transitions = [
+        ("A", 1, "x\ny", [[0, 11], [0, 12]], "x\nY", [[0, 11], [0, 12]]),
+    ]
+    raw = source_line_history(transitions)
+    encodable = {f"{f}:{ln}": entries for (f, ln), entries in raw.items()}
+    round_trip = json.loads(json.dumps(encodable))
+    assert round_trip["0:12"][0]["pass"] == "A"

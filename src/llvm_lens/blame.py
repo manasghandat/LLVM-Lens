@@ -162,6 +162,60 @@ def _plan(before: Sequence[str], after: Sequence[str]) -> list[tuple[int | None,
     return plan
 
 
+# --- source-line diff: how the IR lines for each source line changed ------------
+
+
+def source_line_diff(
+    before_text: str, before_map: Sequence[list[int] | None] | None,
+    after_text: str, after_map: Sequence[list[int] | None] | None,
+) -> dict[tuple[int, int], dict[str, int]]:
+    """Per-source-line change counts across one pass, matched the way the diff view does.
+
+    The IR lines *before* the pass and *after* are each grouped by the source line
+    they map to (via the encoded src_maps). For each source line present after the
+    pass, the two groups are matched with `_plan` — the same LCS walk the diff view
+    runs — so a line counted rewritten is a line the diff would show as a change.
+    Returns {(file, line): {"created", "rewritten", "renamed", "removed", "kept"}}.
+    """
+    before_lines = split_lines(before_text)
+    after_lines = split_lines(after_text)
+
+    def group_by_src(text_lines: list[str], src_map: Sequence[list[int] | None] | None,
+                     ) -> dict[tuple[int, int], list[str]]:
+        groups: dict[tuple[int, int], list[str]] = {}
+        for index, ref in enumerate(src_map or []):
+            if ref is None or index >= len(text_lines):
+                continue
+            groups.setdefault((ref[0], ref[1]), []).append(text_lines[index])
+        return groups
+
+    before_groups = group_by_src(before_lines, before_map)
+    after_groups = group_by_src(after_lines, after_map)
+
+    result: dict[tuple[int, int], dict[str, int]] = {}
+    for src, after_group in after_groups.items():
+        before_group = before_groups.get(src, [])
+        plan = _plan(before_group, after_group)
+        counts = {"created": 0, "rewritten": 0, "renamed": 0, "kept": 0}
+        matched_before = 0
+        for source, kind in plan:
+            if kind is None:
+                if source is not None:
+                    counts["kept"] += 1
+                    matched_before += 1
+                continue
+            counts[kind] += 1
+            if source is not None:
+                matched_before += 1
+        counts["removed"] = len(before_group) - matched_before
+        result[src] = counts
+    for src, before_group in before_groups.items():
+        if src not in result:
+            result[src] = {"created": 0, "rewritten": 0, "renamed": 0,
+                           "kept": 0, "removed": len(before_group)}
+    return result
+
+
 def advance(
     lines: Sequence[str], history: Sequence[Sequence[Entry]], run: int, name: str, text: str,
 ) -> tuple[list[str], list[list[Entry]]]:
@@ -177,6 +231,34 @@ def advance(
         else:
             out_history.append(prior + [Entry(run, name, kind)])
     return out_lines, out_history
+
+
+# --- source-line history: per source line, every pass that changed it -----------
+
+
+def source_line_history(
+    transitions: Sequence[tuple[str, int, str, Sequence[list[int] | None] | None,
+                              str, Sequence[list[int] | None] | None]],
+) -> dict[tuple[int, int], list[dict[str, Any]]]:
+    """Aggregate per-source-line diffs across the whole pipeline into a timeline.
+
+    *transitions* is one entry per pass: (pass_name, run_index, before_text,
+    before_map, after_text, after_map). For each source line, collect every pass
+    that changed it, oldest first, with the per-pass counts source_line_diff
+    computed. A source line that a pass left untouched is omitted from that pass —
+    the history only names the passes that touched it.
+    """
+    history: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    for name, run, before_text, before_map, after_text, after_map in transitions:
+        if before_text == after_text:
+            continue
+        diffs = source_line_diff(before_text, before_map, after_text, after_map)
+        for src, counts in diffs.items():
+            if not counts["created"] and not counts["rewritten"] and not counts["renamed"] and not counts["removed"]:
+                continue
+            history.setdefault(src, []).append(
+                {"pass": name, "run": run, **counts})
+    return history
 
 
 def walk(states: Sequence[tuple[int, str, str]]) -> list[State]:

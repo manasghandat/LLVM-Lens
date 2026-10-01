@@ -639,6 +639,41 @@ def build_commands(
     return commands
 
 
+def _lane_source_history(lane_passes: list[ReportPass],
+                         ) -> dict[str, dict[tuple[int, int], list[dict[str, Any]]]]:
+    """Per-function source-line change history across a lane.
+
+    For every function, walk the passes in order; each pass contributes its
+    before/after IR and the encoded src_maps (the after-map is on the pass, the
+    before-map is the previous pass's after-map, carried forward). source_line_diff
+    compares the IR lines mapping to each source line, and the per-pass counts are
+    accumulated into a per-source-line timeline. Returns {fn: {(file, line): [counts]}}.
+    """
+    from .blame import source_line_history
+    by_fn: dict[str, dict[tuple[int, int], list[dict[str, Any]]]] = {}
+    prev_maps: dict[str, list[Any]] = {}
+    for pass_ in lane_passes:
+        if pass_.is_input:
+            prev_maps = dict(pass_.src_maps)
+            continue
+        if pass_.is_output:
+            continue
+        after_maps = pass_.src_maps
+        for fn, change in pass_.functions.items():
+            before_map = prev_maps.get(fn)
+            after_map = after_maps.get(fn)
+            if after_map is None or change.before == change.after:
+                continue
+            transitions = [(pass_.name, pass_.run_index, change.before, before_map,
+                            change.after, after_map)]
+            diffs = source_line_history(transitions)
+            fn_history = by_fn.setdefault(fn, {})
+            for src, entries in diffs.items():
+                fn_history.setdefault(src, []).extend(entries)
+        prev_maps = dict(after_maps)
+    return by_fn
+
+
 def _attach_source_maps(passes: list[ReportPass]) -> list[dict[str, str]]:
     """Read every mapped source file and re-encode the maps against its index."""
     every: list[LineMap] = []
@@ -802,6 +837,13 @@ def build_report(
 
     source_files = _attach_source_maps(all_passes)
 
+    # Source-line history: keyed per (fn, file, line), a timeline of every pass
+    # that changed the IR lines mapping to that source line, with counts.
+    source_history = {
+        "ir": _lane_source_history(lane_a),
+        "mir": _lane_source_history(lane_b),
+    }
+
     final_cfg: dict[str, dict[str, str]] = {}
     for lane, lane_passes in (("ir", lane_a), ("mir", lane_b)):
         final: dict[str, str] = {}
@@ -830,6 +872,12 @@ def build_report(
         "finalCfg": final_cfg,
         "analyses": compute_analyses(input_ir),
         "sourceFiles": source_files,
+        "sourceHistory": {
+            "ir": {fn: {f"{f}:{ln}": entries for (f, ln), entries in fhist.items()}
+                   for fn, fhist in source_history["ir"].items()},
+            "mir": {fn: {f"{f}:{ln}": entries for (f, ln), entries in fhist.items()}
+                    for fn, fhist in source_history["mir"].items()},
+        },
         "pipelineTree": pipeline_tree,
         "passArguments": pass_arguments,
         "hasCausality": causal_doc is not None,

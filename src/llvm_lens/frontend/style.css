@@ -504,6 +504,18 @@ select.ptab:focus-visible { outline: 1px solid var(--trace); outline-offset: 1px
 .bkind.rewritten { color: var(--trace); }
 .bkind.renamed { color: var(--faint); }
 
+/* --- Source-line history: per-pass change counts for a clicked source line -- */
+.src-history { border-top: 1px solid var(--line-strong); margin-top: 8px; }
+.src-history .bchain { max-height: 200px; }
+.src-empty { padding: 8px 10px; color: var(--dim); }
+.sch-cell { flex: none; display: flex; gap: 8px; justify-content: flex-end; }
+.sch { font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sch.created { color: var(--add); }
+.sch.rewritten { color: var(--trace); }
+.sch.renamed { color: var(--faint); }
+.sch.removed { color: var(--del); }
+.sch.kept { color: var(--dim); }
+
 /* --- Causes drawer tab ------------------------------------------------------ */
 
 .cnode + .cnode { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
